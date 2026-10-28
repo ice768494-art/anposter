@@ -166,4 +166,8 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,text_fallback))
     log.info("AnimeNetworkTamil Poster Bot started"); app.run_polling(allowed_updates=Update.ALL_TYPES)
 
-if __name__=="__main__": main()
+if __name__ == "__main__":
+    import asyncio
+
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    main()
