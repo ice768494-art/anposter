@@ -293,7 +293,7 @@ async def poster_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption += f"\n📅 {d['year']}"
         if d["rating"]:
             caption += f"  ⭐ {float(d['rating']):.1f}/10"
-        caption += f"\n <blockquote expandable {synopsis_lines} /n </blockquote>🎞 {DEFAULT_QUALITY}\n🔊 {DEFAULT_AUDIO}\n✈ {DEFAULT_JOIN}\n\nAnimeNetworkTamil"
+        caption += f"\n <blockquote expandable🎞 {DEFAULT_QUALITY}\n🔊 {DEFAULT_AUDIO}\n✈ {DEFAULT_JOIN}\n\nAnimeNetworkTamil </blockquote>"
         # send_photo makes Telegram display it as a normal photo, not a document.
         await context.bot.send_photo(chat_id=q.message.chat_id, photo=image, caption=caption[:1024])
         await q.message.reply_text("✅ Poster ready! Sent as a photo. Artwork and metadata are subject to TMDB terms and applicable rights.")
