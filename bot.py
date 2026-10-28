@@ -2,7 +2,7 @@ import os
 import threading
 from flask import Flask
 
-web_app = Flask(name)
+web_app = Flask(__name__)
 
 @web_app.route("/")
 def home():
