@@ -6,15 +6,15 @@ web_app = Flask(name)
 
 @web_app.route("/")
 def home():
-return "Anime Poster Bot is running!", 200
+  return "Anime Poster Bot is running!", 200
 
 @web_app.route("/health")
 def health():
-return "OK", 200
+  return "OK", 200
 
 def run_web_server():
-port = int(os.environ.get("PORT", 10000))
-web_app.run(host="0.0.0.0", port=port, use_reloader=False)
+  port = int(os.environ.get("PORT", 10000))
+  web_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
 threading.Thread(target=run_web_server, daemon=True).start()
 
