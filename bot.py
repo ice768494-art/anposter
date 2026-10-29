@@ -50,7 +50,6 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TMDB_TOKEN = os.getenv("TMDB_READ_ACCESS_TOKEN", "").strip()
 TMDB_KEY = os.getenv("TMDB_API_KEY", "").strip()
 
-# Set these in Render Environment to point buttons at your real destinations.
 WATCH_NOW_URL = os.getenv(
     "WATCH_NOW_URL", "https://t.me/AnimeNetworkTamil"
 ).strip()
@@ -265,7 +264,6 @@ def draw_telegram_join(draw, x, y, width):
         width=3,
     )
 
-    # White circular badge and blue paper-plane symbol.
     cx, cy, radius = x + 51, y + height // 2, 29
     draw.ellipse(
         (cx - radius, cy - radius, cx + radius, cy + radius),
@@ -347,7 +345,28 @@ def make_poster(info):
         draw, wrap(draw, title, title_font, maxw)[:2],
         (tx, 95), title_font, "#FFFFFF", 8, 2, "#101322"
     )
-    y += 18
+
+    # Genres now appear directly below the anime title.
+    genres = info.get("genres", [])
+    genre_text = "  •  ".join(genres)
+    y += 12
+
+    if genre_text:
+        genre_font = font(27, True)
+        while (
+            draw.textbbox((0, 0), genre_text, font=genre_font)[2] > maxw
+            and genre_font.size > 18
+        ):
+            genre_font = font(genre_font.size - 1, True)
+
+        draw.text(
+            (tx, y),
+            genre_text,
+            font=genre_font,
+            fill="#FFCF78",
+        )
+        y += 44
+
     draw.rounded_rectangle(
         (tx, y, tx + 175, y + 9), radius=4, fill="#FF3158"
     )
@@ -365,6 +384,7 @@ def make_poster(info):
         draw, synopsis_lines, (tx, y), font(25), "#F0F1FA", 10
     )
 
+    # Genres are intentionally not repeated here.
     metadata = []
     if info.get("year"):
         metadata.append(info["year"])
@@ -373,7 +393,6 @@ def make_poster(info):
             metadata.append(f"TMDB ★ {float(info['rating']):.1f}/10")
         except (ValueError, TypeError):
             pass
-    metadata.extend(info.get("genres", []))
 
     meta_y = min(max(y + 8, 620), 680)
     if metadata:
@@ -397,7 +416,6 @@ def make_poster(info):
         stroke_width=1,
         stroke_fill="#111222",
     )
-    # Leave room on the far right for the existing channel logo.
     draw_telegram_join(draw, tx, 910, 930)
 
     # Existing channel logo and watermark.
@@ -457,8 +475,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "🎌 Welcome to AnimeNetworkTamil Poster Bot!\n\n"
         "Create 16:9 (1920×1080) anime posters with synopsis, year, rating, "
-        "genres, large quality buttons, a Telegram logo banner, channel logo "
-        "and watermark.\n\n"
+        "genres below the title, large quality buttons, a Telegram logo banner, "
+        "channel logo and watermark.\n\n"
         "Commands:\n"
         "/poster <anime name>\n"
         "/search <anime name>\n"
@@ -573,9 +591,10 @@ async def poster_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = details(item)
         image = make_poster(data)
 
-        # HTML is escaped so titles/synopsis cannot break the Telegram caption.
         title = html.escape(data["title"])
         caption = f"🎌 <b>{title}</b>"
+        if data["genres"]:
+            caption += f"\n🎭 {html.escape(', '.join(data['genres']))}"
         if data["year"]:
             caption += f"\n📅 {html.escape(data['year'])}"
         if data["rating"]:
@@ -597,9 +616,9 @@ async def poster_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=poster_keyboard(),
         )
         await query.message.reply_text(
-            "✅ Poster ready! The image has large quality badges and a "
-            "Telegram-style join banner. The Watch Now and Join Telegram "
-            "buttons below the image are clickable."
+            "✅ Poster ready! Genres are displayed directly below the anime "
+            "title. The Watch Now and Join Telegram buttons below the image "
+            "are clickable."
         )
     except Exception as error:
         log.exception("Poster creation failed")
@@ -639,7 +658,6 @@ def main():
 
 
 if __name__ == "__main__":
-    # Run the HTTP health server for Render Web Service deployments.
     threading.Thread(target=run_web_server, daemon=True).start()
     try:
         asyncio.get_event_loop()
