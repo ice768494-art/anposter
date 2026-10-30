@@ -151,6 +151,13 @@ def details(item):
             for genre in data.get("genres", [])
             if genre.get("name")
         ][:3],
+        "media_type": "TV SERIES" if item.get("kind") == "tv" else "MOVIE",
+        "status": data.get("status") or "",
+        "seasons": data.get("number_of_seasons"),
+        "episodes": data.get("number_of_episodes"),
+        "runtime": (data.get("episode_run_time") or [None])[0]
+            if item.get("kind") == "tv" else data.get("runtime"),
+        "studio": next((company.get("name", "") for company in data.get("production_companies", []) if company.get("name")), ""),
         "poster_path": data.get("poster_path") or item.get("poster_path"),
     }
 
@@ -379,44 +386,71 @@ def make_poster(info):
     ).strip() or "Synopsis unavailable."
     if len(synopsis) > 620:
         synopsis = synopsis[:620].rsplit(" ", 1)[0].rstrip(" ,;:-") + "…"
-    synopsis_lines = wrap(draw, synopsis, font(25), maxw)[:8]
+    # Keep the synopsis readable but reserve a predictable area for details.
+    synopsis_lines = wrap(draw, synopsis, font(25), maxw)[:5]
     y = put_lines(
-        draw, synopsis_lines, (tx, y), font(25), "#F0F1FA", 10
+        draw, synopsis_lines, (tx, y), font(25), "#F0F1FA", 9
     )
 
-    # Genres are intentionally not repeated here.
+    # Build useful metadata instead of leaving a large blank block.
     metadata = []
     if info.get("year"):
-        metadata.append(info["year"])
+        metadata.append(str(info["year"]))
     if info.get("rating"):
         try:
             metadata.append(f"TMDB ★ {float(info['rating']):.1f}/10")
         except (ValueError, TypeError):
             pass
+    if info.get("media_type"):
+        metadata.append(info["media_type"])
+    if info.get("seasons"):
+        metadata.append(f"{info['seasons']} SEASON" + ("S" if info["seasons"] != 1 else ""))
+    if info.get("episodes"):
+        metadata.append(f"{info['episodes']} EPISODES")
+    if info.get("runtime"):
+        metadata.append(f"{info['runtime']} MIN")
+    if info.get("status"):
+        metadata.append(str(info["status"]).upper())
+    if info.get("studio"):
+        metadata.append("STUDIO: " + str(info["studio"]))
 
-    meta_y = min(max(y + 8, 620), 680)
-    if metadata:
-        meta_font = font(21, True)
-        put_lines(
-            draw,
-            wrap(draw, "  •  ".join(metadata), meta_font, maxw)[:2],
-            (tx, meta_y),
-            meta_font,
-            "#FFCF78",
-            7,
-        )
-
-    # Larger quality buttons, Tamil audio and Telegram banner.
-    draw_quality_buttons(draw, tx, 755, maxw)
+    meta_y = max(y + 18, 565)
+    meta_y = min(meta_y, 580)
+    panel_h = 94
+    draw.rounded_rectangle(
+        (tx, meta_y - 12, tx + maxw, meta_y + panel_h),
+        radius=18,
+        fill=(18, 22, 36, 205),
+        outline=(255, 207, 120, 115),
+        width=2,
+    )
     draw.text(
-        (tx, 845),
+        (tx + 22, meta_y), "ANIME DETAILS",
+        font=font(19, True), fill="#FFB547"
+    )
+    meta_font = font(20, True)
+    meta_text = "  •  ".join(metadata) if metadata else "Details unavailable"
+    meta_lines = wrap(draw, meta_text, meta_font, maxw - 44)[:2]
+    put_lines(
+        draw, meta_lines, (tx + 22, meta_y + 34), meta_font,
+        "#FFCF78", 5
+    )
+
+    # Clear section label makes the quality choices feel intentional.
+    draw.text(
+        (tx, 690), "AVAILABLE QUALITIES",
+        font=font(18, True), fill="#D9DCE8"
+    )
+    draw_quality_buttons(draw, tx, 720, maxw)
+    draw.text(
+        (tx, 810),
         "🔊  " + DEFAULT_AUDIO,
         font=font(27, True),
         fill="#FFFFFF",
         stroke_width=1,
         stroke_fill="#111222",
     )
-    draw_telegram_join(draw, tx, 910, 930)
+    draw_telegram_join(draw, tx, 890, 930)
 
     # Existing channel logo and watermark.
     if LOGO.exists():
