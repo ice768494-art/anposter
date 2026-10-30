@@ -234,23 +234,21 @@ def centered_text(draw, box, text, fnt, fill):
 
 
 def draw_quality_buttons(draw, x, y, max_width):
-    """Large, individually readable 480P / 720P / 1080P badges."""
+    """Three bold quality buttons spanning the entire available row."""
     labels = DEFAULT_QUALITIES
-    gap = 20
-    button_h = 70
-    button_w = 190
-    label_font = font(30, True)
-
-    total_width = len(labels) * button_w + (len(labels) - 1) * gap
-    if total_width > max_width:
-        button_w = (max_width - gap * (len(labels) - 1)) // len(labels)
+    gap = 16
+    button_h = 82
+    button_w = (max_width - gap * (len(labels) - 1)) // len(labels)
+    label_font = font(36, True)
 
     for index, label in enumerate(labels):
         x1 = x + index * (button_w + gap)
         x2 = x1 + button_w
+        if index == len(labels) - 1:
+            x2 = x + max_width
         draw.rounded_rectangle(
             (x1, y, x2, y + button_h),
-            radius=16,
+            radius=18,
             fill="#FFC857",
             outline="#FFFFFF",
             width=3,
@@ -347,10 +345,13 @@ def make_poster(info):
 
     tx, maxw = 735, 1090
     title = info["title"].upper()
-    title_font = font(72 if len(title) < 23 else 58, True)
+    # Larger display title; long names scale down and wrap safely.
+    title_size = 94 if len(title) <= 15 else 82 if len(title) <= 22 else 68
+    title_font = font(title_size, True)
+    title_lines = wrap(draw, title, title_font, maxw)[:2]
     y = put_lines(
-        draw, wrap(draw, title, title_font, maxw)[:2],
-        (tx, 95), title_font, "#FFFFFF", 8, 2, "#101322"
+        draw, title_lines,
+        (tx, 72), title_font, "#FFFFFF", 7, 3, "#101322"
     )
 
     # Genres now appear directly below the anime title.
@@ -442,15 +443,37 @@ def make_poster(info):
         font=font(18, True), fill="#D9DCE8"
     )
     draw_quality_buttons(draw, tx, 720, maxw)
+    # Draw the speaker symbol with vector shapes so it renders consistently
+    # even on servers whose installed fonts do not contain emoji glyphs.
+    speaker_y = 826
+    draw.polygon(
+        [
+            (tx + 4, speaker_y + 17),
+            (tx + 22, speaker_y + 17),
+            (tx + 43, speaker_y + 2),
+            (tx + 43, speaker_y + 54),
+            (tx + 22, speaker_y + 39),
+            (tx + 4, speaker_y + 39),
+        ],
+        fill="#35A9FF",
+    )
+    draw.arc(
+        (tx + 35, speaker_y + 5, tx + 70, speaker_y + 51),
+        start=-65, end=65, fill="#35A9FF", width=6,
+    )
+    draw.arc(
+        (tx + 40, speaker_y - 3, tx + 84, speaker_y + 59),
+        start=-65, end=65, fill="#35A9FF", width=5,
+    )
     draw.text(
-        (tx, 810),
-        "🔊  " + DEFAULT_AUDIO,
-        font=font(27, True),
+        (tx + 100, 818),
+        DEFAULT_AUDIO,
+        font=font(40, True),
         fill="#FFFFFF",
-        stroke_width=1,
+        stroke_width=2,
         stroke_fill="#111222",
     )
-    draw_telegram_join(draw, tx, 890, 930)
+    draw_telegram_join(draw, tx, 900, maxw)
 
     # Existing channel logo and watermark.
     if LOGO.exists():
@@ -626,26 +649,43 @@ async def poster_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image = make_poster(data)
 
         title = html.escape(data["title"])
-        caption = f"🎌 <b>{title}</b>"
-        if data["genres"]:
-            caption += f"\n🎭 {html.escape(', '.join(data['genres']))}"
-        if data["year"]:
-            caption += f"\n📅 {html.escape(data['year'])}"
-        if data["rating"]:
-            caption += f"  ⭐ {float(data['rating']):.1f}/10"
+        anime_name = html.escape(data["title"])
+        synopsis = re.sub(r"\\s+", " ", data.get("overview", "")).strip()
+        if not synopsis:
+            synopsis = "Synopsis unavailable."
 
-        quote = (
-            f"🎞 {html.escape(DEFAULT_QUALITY)}\n"
-            f"🔊 {html.escape(DEFAULT_AUDIO)}\n"
-            f"✈️ {html.escape(DEFAULT_JOIN)}\n\n"
-            "AnimeNetworkTamil"
+        fixed = f"🎌 <b>{title}</b>\\n\\n<blockquote expandable>"
+        synopsis_heading = f"📖 <b>Synopsis : {anime_name}</b>\\n"
+        footer = (
+            f"\\n\\n🎞 {html.escape(DEFAULT_QUALITY)}"
+            f"\\n🔊 {html.escape(DEFAULT_AUDIO)}"
+            f"\\n✈️ Telegram Join → {html.escape(CHANNEL_USERNAME)}"
+            "\\n\\nAnimeNetworkTamil"
         )
-        caption += f"\n\n<blockquote expandable>{quote}</blockquote>"
+        closing = "</blockquote>"
+        available = 1024 - len(fixed) - len(synopsis_heading) - len(footer) - len(closing)
+        if available < 80:
+            footer = (
+                f"\\n\\n🎞 {html.escape(DEFAULT_QUALITY)}"
+                f"\\n🔊 {html.escape(DEFAULT_AUDIO)}"
+                f"\\n✈️ {html.escape(DEFAULT_JOIN)}"
+                "\\n\\nAnimeNetworkTamil"
+            )
+            available = 1024 - len(fixed) - len(synopsis_heading) - len(footer) - len(closing)
+        while len(html.escape(synopsis)) > max(0, available):
+            synopsis = synopsis[:-1]
+        if synopsis and len(html.escape(synopsis)) < len(html.escape(data.get("overview", ""))):
+            synopsis = synopsis.rstrip(" ,;:-") + "…"
+
+        caption = (
+            fixed + synopsis_heading + html.escape(synopsis)
+            + footer + closing
+        )
 
         await context.bot.send_photo(
             chat_id=query.message.chat_id,
             photo=image,
-            caption=caption[:1024],
+            caption=caption,
             parse_mode=ParseMode.HTML,
             reply_markup=poster_keyboard(),
         )
@@ -677,7 +717,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("poster", search_cmd))
+    app.add_handler(CommandHandler("p", search_cmd))
     app.add_handler(CommandHandler("search", search_cmd))
     app.add_handler(CommandHandler("synopsis", synopsis_cmd))
     app.add_handler(
