@@ -535,7 +535,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "genres below the title, large quality buttons, a Telegram logo banner, "
         "channel logo and watermark.\n\n"
         "Commands:\n"
-        "/poster <anime name>\n"
+        "/p <anime name>\n"
         "/search <anime name>\n"
         "/synopsis <anime name>\n"
         "/help"
@@ -545,7 +545,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
         "Commands:\n"
-        "/poster <anime name> — create a 16:9 poster\n"
+        "/p <anime name> — create a 16:9 poster\n"
         "/search <anime name> — search titles\n"
         "/synopsis <anime name> — get synopsis and metadata\n"
         "/help — show commands\n\n"
@@ -557,7 +557,7 @@ async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).strip()
     if not query:
         await update.effective_message.reply_text(
-            "Usage: /poster <anime name>\nExample: /poster Solo Leveling"
+            "Usage: /p <anime name>\nExample: /poster Solo Leveling"
         )
         return
 
@@ -648,39 +648,70 @@ async def poster_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = details(item)
         image = make_poster(data)
 
-        title = html.escape(data["title"])
-        anime_name = html.escape(data["title"])
-        synopsis = re.sub(r"\\s+", " ", data.get("overview", "")).strip()
-        if not synopsis:
-            synopsis = "Synopsis unavailable."
+        
+        # ─── ANIME CAPTION ───
+        def get_value(key, default):
+            value = data.get(key)
+            return html.escape(str(value).strip()) if value else default
 
-        fixed = f"🎌 <b>{title}</b>\\n\\n<blockquote expandable>"
-        synopsis_heading = f"📖 <b>Synopsis : {anime_name}</b>\\n"
-        footer = (
-            f"\\n\\n🎞 {html.escape(DEFAULT_QUALITY)}"
-            f"\\n🔊 {html.escape(DEFAULT_AUDIO)}"
-            f"\\n✈️ Telegram Join → {html.escape(CHANNEL_USERNAME)}"
-            "\\n\\nAnimeNetworkTamil"
+        title = get_value("title", "Unknown Anime")
+        japanese = get_value("japanese", "Not Available")
+        season = get_value("season", "Unknown")
+        episode = get_value("episode", "TBA")
+        audio = get_value("audio", DEFAULT_AUDIO)
+        quality = get_value("quality", DEFAULT_QUALITY)
+        status = get_value("status", "Unknown")
+        year = get_value("year", "TBA")
+        studio = get_value("studio", "TBA")
+        genres = get_value("genres", "Not Available")
+        source = get_value("source", "Unknown")
+
+        synopsis = re.sub(
+            r"\s+", " ", data.get("overview", "")
+        ).strip()
+
+        if not synopsis:
+            synopsis = "Synopsis Not Available."
+
+        anime_name = title
+
+        # Metadata outside expandable blockquote
+        metadata = (
+            f"🎌 <b>Title :</b> {title}\n"
+            f"〄 <b>Season :</b> {season}\n"
+            f"〄 <b>Episode :</b> {episode}\n"
+            f"〄 <b>Audio :</b> {audio}\n"
+            f"〄 <b>Quality :</b> {quality}\n"
+            f"〄 <b>Status :</b> {status}\n"
+            f"〄 <b>Release Year :</b> {year}\n"
+            f"〄 <b>Genres :</b> {genres}\n"
+            f"〄 <b>Source :</b> {source}\n\n"
+            f"➽ <b>Nᴇᴛᴡᴏʀᴋ :-</b> "
+            f"@AnimeNetworkTamil ✓\n\n"
+        )
+
+        # Expandable synopsis
+        opening = (
+            f"<blockquote expandable>"
+            f"📖 <b>Synopsis of {anime_name}</b>\n"
         )
         closing = "</blockquote>"
-        available = 1024 - len(fixed) - len(synopsis_heading) - len(footer) - len(closing)
-        if available < 80:
-            footer = (
-                f"\\n\\n🎞 {html.escape(DEFAULT_QUALITY)}"
-                f"\\n🔊 {html.escape(DEFAULT_AUDIO)}"
-                f"\\n✈️ {html.escape(DEFAULT_JOIN)}"
-                "\\n\\nAnimeNetworkTamil"
-            )
-            available = 1024 - len(fixed) - len(synopsis_heading) - len(footer) - len(closing)
-        while len(html.escape(synopsis)) > max(0, available):
-            synopsis = synopsis[:-1]
-        if synopsis and len(html.escape(synopsis)) < len(html.escape(data.get("overview", ""))):
-            synopsis = synopsis.rstrip(" ,;:-") + "…"
+
+        available = 1024 - len(metadata) - len(opening) - len(closing)
+
+        # Keep Telegram photo caption within 1024 characters
+        escaped_synopsis = html.escape(synopsis)
+
+        if len(escaped_synopsis) > available:
+            synopsis = synopsis[:max(0, available - 10)].rsplit(" ", 1)[0] + "…"
 
         caption = (
-            fixed + synopsis_heading + html.escape(synopsis)
-            + footer + closing
+            metadata
+            + opening
+            + html.escape(synopsis)
+            + closing
         )
+
 
         await context.bot.send_photo(
             chat_id=query.message.chat_id,
@@ -690,9 +721,7 @@ async def poster_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=poster_keyboard(),
         )
         await query.message.reply_text(
-            "✅ Poster ready! Genres are displayed directly below the anime "
-            "title. The Watch Now and Join Telegram buttons below the image "
-            "are clickable."
+            "✅ Poster Ready Aiduchu"
         )
     except Exception as error:
         log.exception("Poster creation failed")
