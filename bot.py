@@ -132,6 +132,23 @@ def search(query):
 
 def details(item):
     data = api(f"/{item['kind']}/{item['id']}", {"language": "en-US"})
+
+    season_list = [
+        s for s in data.get("seasons", [])
+        if s.get("season_number", 0) > 0
+    ]
+
+    first_season = min(
+        season_list,
+        key=lambda s: s["season_number"],
+        default=None
+    )
+
+    season_label = (
+        f"Season {first_season['season_number']:02d}"
+        if first_season else "Unknown"
+    )
+
     return {
         "title": data.get("name") or data.get("title") or item["title"],
         "overview": (
@@ -153,7 +170,7 @@ def details(item):
         ][:3],
         "media_type": "TV SERIES" if item.get("kind") == "tv" else "MOVIE",
         "status": data.get("status") or "",
-        "seasons": data.get("number_of_seasons"),
+        "season": season_label,
         "episodes": data.get("number_of_episodes"),
         "runtime": (data.get("episode_run_time") or [None])[0]
             if item.get("kind") == "tv" else data.get("runtime"),
