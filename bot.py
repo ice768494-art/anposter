@@ -11,7 +11,7 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -250,7 +250,7 @@ def centered_text(draw, box, text, fnt, fill):
     draw.text((x, y), text, font=fnt, fill=fill)
 
 
-def draw_quality_buttons(draw, x, y, max_width):
+def draw_quality_buttons(draw, x, y, max_width, button_color="#FFC857"):
     """Three bold quality buttons spanning the entire available row."""
     labels = DEFAULT_QUALITIES
     gap = 16
@@ -266,7 +266,7 @@ def draw_quality_buttons(draw, x, y, max_width):
         draw.rounded_rectangle(
             (x1, y, x2, y + button_h),
             radius=18,
-            fill="#FFC857",
+            fill=button_color,
             outline="#FFFFFF",
             width=3,
         )
@@ -321,21 +321,32 @@ def draw_telegram_join(draw, x, y, width):
     )
 
 
-def make_poster(info, poster_bytes=None):
-    if poster_bytes is not None:
-        poster = Image.open(io.BytesIO(poster_bytes)).convert("RGB")
-    else:
-        if not info.get("poster_path"):
-            raise RuntimeError("No poster artwork found.")
-        response = http.get(IMG + "w780" + info["poster_path"], timeout=30)
-        response.raise_for_status()
-        poster = Image.open(io.BytesIO(response.content)).convert("RGB")
+TEMPLATES = {
+    "cinematic": {"label": "🎬 Cinematic Dark", "accent": "#FF3158", "gold": "#FFB547", "soft": "#FFCF78", "button": "#FFC857", "overlay": (5, 7, 18, 125)},
+    "neon": {"label": "⚡ Neon Blue", "accent": "#00D9FF", "gold": "#7DEBFF", "soft": "#BDF7FF", "button": "#00CFE8", "overlay": (0, 15, 30, 155)},
+    "purple": {"label": "💜 Purple Glow", "accent": "#A970FF", "gold": "#D2AEFF", "soft": "#E8D7FF", "button": "#A970FF", "overlay": (20, 5, 35, 155)},
+    "minimal": {"label": "✨ Minimal Clean", "accent": "#E6E8EF", "gold": "#D4D8E3", "soft": "#FFFFFF", "button": "#E6E8EF", "overlay": (12, 14, 22, 165)},
+}
+
+
+def make_poster(info, template="cinematic"):
+    style = TEMPLATES.get(template, TEMPLATES["cinematic"])
+    accent = style["accent"]
+    gold = style["gold"]
+    soft = style["soft"]
+    button_color = style["button"]
+    if not info.get("poster_path"):
+        raise RuntimeError("No poster artwork found.")
+
+    response = http.get(IMG + "w780" + info["poster_path"], timeout=30)
+    response.raise_for_status()
+    poster = Image.open(io.BytesIO(response.content)).convert("RGB")
 
     bg = ImageOps.fit(
         poster, (W, H), method=Image.Resampling.LANCZOS
     ).filter(ImageFilter.GaussianBlur(28))
     bg = Image.eval(bg, lambda pixel: int(pixel * 0.36)).convert("RGBA")
-    bg.alpha_composite(Image.new("RGBA", (W, H), (5, 7, 18, 125)))
+    bg.alpha_composite(Image.new("RGBA", (W, H), style["overlay"]))
     canvas = bg
 
     # Original vertical poster artwork on the left.
@@ -364,14 +375,27 @@ def make_poster(info, poster_bytes=None):
 
     tx, maxw = 735, 1090
     title = info["title"].upper()
-    # Larger display title; long names scale down and wrap safely.
+    # Fit the complete title: allow extra lines and reduce font size as needed.
     title_size = 94 if len(title) <= 15 else 82 if len(title) <= 22 else 68
     title_font = font(title_size, True)
-    title_lines = wrap(draw, title, title_font, maxw)[:2]
+    title_lines = wrap(draw, title, title_font, maxw)
+    while title_size > 30:
+        line_height = max(1, draw.textbbox((0, 0), "Ag", font=title_font)[3])
+        if len(title_lines) <= 4 and line_height * len(title_lines) + 10 * (len(title_lines) - 1) <= 285:
+            break
+        title_size -= 2
+        title_font = font(title_size, True)
+        title_lines = wrap(draw, title, title_font, maxw)
     y = put_lines(
         draw, title_lines,
-        (tx, 72), title_font, "#FFFFFF", 7, 3, "#101322"
+        (tx, 54), title_font, "#FFFFFF", 7, 3, "#101322"
     )
+
+    # A small label identifies the selected design.
+    template_label = style["label"].upper()
+    label_font = font(17, True)
+    draw.text((tx, y + 2), template_label, font=label_font, fill=gold)
+    y += 28
 
     # Genres now appear directly below the anime title.
     genres = info.get("genres", [])
@@ -390,15 +414,15 @@ def make_poster(info, poster_bytes=None):
             (tx, y),
             genre_text,
             font=genre_font,
-            fill="#FFCF78",
+            fill=soft,
         )
         y += 44
 
     draw.rounded_rectangle(
-        (tx, y, tx + 175, y + 9), radius=4, fill="#FF3158"
+        (tx, y, tx + 175, y + 9), radius=4, fill=accent
     )
     y += 35
-    draw.text((tx, y), "SYNOPSIS", font=font(29, True), fill="#FFB547")
+    draw.text((tx, y), "SYNOPSIS", font=font(29, True), fill=gold)
     y += 48
 
     synopsis = re.sub(
@@ -441,19 +465,19 @@ def make_poster(info, poster_bytes=None):
         (tx, meta_y - 12, tx + maxw, meta_y + panel_h),
         radius=18,
         fill=(18, 22, 36, 205),
-        outline=(255, 207, 120, 115),
+        outline=gold,
         width=2,
     )
     draw.text(
         (tx + 22, meta_y), "ANIME DETAILS",
-        font=font(19, True), fill="#FFB547"
+        font=font(19, True), fill=gold
     )
     meta_font = font(20, True)
     meta_text = "  •  ".join(metadata) if metadata else "Details unavailable"
     meta_lines = wrap(draw, meta_text, meta_font, maxw - 44)[:2]
     put_lines(
         draw, meta_lines, (tx + 22, meta_y + 34), meta_font,
-        "#FFCF78", 5
+        soft, 5
     )
 
     # Clear section label makes the quality choices feel intentional.
@@ -461,7 +485,7 @@ def make_poster(info, poster_bytes=None):
         (tx, 690), "AVAILABLE QUALITIES",
         font=font(18, True), fill="#D9DCE8"
     )
-    draw_quality_buttons(draw, tx, 720, maxw)
+    draw_quality_buttons(draw, tx, 720, maxw, button_color)
     # Draw the speaker symbol with vector shapes so it renders consistently
     # even on servers whose installed fonts do not contain emoji glyphs.
     speaker_y = 826
@@ -649,242 +673,125 @@ async def synopsis_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def poster_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """After choosing an anime, ask which poster design to use."""
     query = update.callback_query
     await query.answer()
-
     index = query.data.split(":", 1)[1]
     item = context.user_data.get("results", {}).get(index)
     if not item:
         await query.edit_message_text("Search expired. Please run /p again.")
         return
 
-    try:
-        data = details(item)
-        image_data = api(
-            f"/{item['kind']}/{item['id']}/images",
-            {"include_image_language": "en,null"},
-        )
-        paths = []
-        for poster in image_data.get("posters", []):
-            path = poster.get("file_path")
-            if path and path not in paths:
-                paths.append(path)
-        if item.get("poster_path") and item["poster_path"] not in paths:
-            paths.insert(0, item["poster_path"])
-        paths = paths[:8]
-        if not paths:
-            paths = [data["poster_path"]] if data.get("poster_path") else []
-        if not paths:
-            raise RuntimeError("TMDB has no poster images for this title.")
-
-        context.user_data["poster_workflow"] = {
-            "item": item,
-            "data": data,
-            "image_paths": paths,
-            "image_bytes": None,
-        }
-
-        # Telegram media groups show all available poster choices in one gallery.
-        media = [
-            InputMediaPhoto(media=IMG + "w342" + path)
-            for path in paths
-        ]
-        await query.edit_message_text(
-            f"🖼 Choose a poster image for {data['title']}:"
-        )
-        await context.bot.send_media_group(
-            chat_id=query.message.chat_id,
-            media=media,
-        )
-        buttons = []
-        for start in range(0, len(paths), 4):
-            buttons.append([
-                InlineKeyboardButton(
-                    f"Image {i + 1}", callback_data=f"img:{i}"
-                )
-                for i in range(start, min(start + 4, len(paths)))
-            ])
-        buttons.append([
-            InlineKeyboardButton("📤 Upload My Own Image", callback_data="img:upload")
-        ])
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text="Tap the image number you want, or upload your own image.",
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
-    except Exception as error:
-        log.exception("Poster image selection failed")
-        await query.message.reply_text(f"⚠️ Could not load poster choices: {error}")
-
-
-async def image_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    workflow = context.user_data.get("poster_workflow")
-    if not workflow:
-        await query.message.reply_text("This selection expired. Please run /p again.")
-        return
-
-    choice = query.data.split(":", 1)[1]
-    if choice == "upload":
-        context.user_data["awaiting_custom_image"] = True
-        await query.message.reply_text(
-            "📤 Send your poster image now as a photo or image file."
-        )
-        return
-
-    try:
-        index = int(choice)
-        workflow["data"]["poster_path"] = workflow["image_paths"][index]
-    except (ValueError, IndexError, KeyError):
-        await query.message.reply_text("Invalid image choice. Please run /p again.")
-        return
-
-    context.user_data["awaiting_season"] = True
-    current = workflow["data"].get("season") or "Unknown"
-    await query.message.reply_text(
-        f"✅ Image {index + 1} selected.\n\n"
-        f"🔢 Enter the season number for {workflow['data']['title']}\n"
-        "Example: 2 (will display as Season 02).\n"
-        f"TMDB suggestion: {current}\n"
-        "Send 0 for a movie/no season, or type skip to keep the TMDB suggestion."
+    buttons = [
+        [InlineKeyboardButton(TEMPLATES[key]["label"], callback_data=f"template:{index}:{key}")]
+        for key in TEMPLATES
+    ]
+    await query.edit_message_text(
+        f"🎨 Selected: {item['title']}\n\nChoose a poster template:",
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
 
-async def finish_poster(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    workflow = context.user_data.get("poster_workflow")
-    if not workflow:
-        await update.effective_message.reply_text("Your poster session expired. Please run /p again.")
+async def template_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    _, index, template = query.data.split(":", 2)
+    item = context.user_data.get("results", {}).get(index)
+    if not item:
+        await query.edit_message_text("Search expired. Please run /p again.")
         return
 
-    data = workflow["data"]
+    await query.edit_message_text(
+        f"🎨 Creating {TEMPLATES.get(template, TEMPLATES['cinematic'])['label']} poster for {item['title']}…"
+    )
     try:
-        status_message = await update.effective_message.reply_text(
-            f"🎨 Creating 1920×1080 poster for {data['title']}…"
-        )
-        image = make_poster(data, poster_bytes=workflow.get("image_bytes"))
+        data = details(item)
+        image = make_poster(data, template=template)
 
+        
+        # ─── ANIME CAPTION ───
         def get_value(key, default):
             value = data.get(key)
-            if isinstance(value, list):
-                value = ", ".join(str(v) for v in value)
             return html.escape(str(value).strip()) if value else default
 
         title = get_value("title", "Unknown Anime")
-        season = get_value("manual_season", get_value("season", "Unknown"))
+        japanese = get_value("japanese", "Not Available")
+        season = get_value("season", "Unknown")
         episode = get_value("episode", "TBA")
         audio = get_value("audio", DEFAULT_AUDIO)
         quality = get_value("quality", DEFAULT_QUALITY)
         status = get_value("status", "Unknown")
         year = get_value("year", "TBA")
+        studio = get_value("studio", "TBA")
         genres = get_value("genres", "Not Available")
         source = get_value("source", "Unknown")
-        synopsis = re.sub(r"\s+", " ", data.get("overview", "")).strip()
+
+        synopsis = re.sub(
+            r"\s+", " ", data.get("overview", "")
+        ).strip()
+
         if not synopsis:
             synopsis = "Synopsis Not Available."
 
+        anime_name = title
+
+        # Metadata outside expandable blockquote
         metadata = (
-            f"<b>🎌 Title : {title}\n"
-            f"〄 Season : {season}\n"
-            f"〄 Episode : {episode}\n"
-            f"〄 Audio : {audio}\n"
-            f"〄 Quality : {quality}\n"
-            f"〄 Status : {status}\n"
-            f"〄 Release Year : {year}\n"
-            f"〄 Genres : {genres}\n"
-            f"〄 Source : {source}\n\n"
-            f"➽ Nᴇᴛᴡᴏʀᴋ :- @AnimeNetworkTamil ✓</b>\n"
+            f"🎌 <b>Title :</b> {title}\n"
+            f"〄 <b>Season :</b> {season}\n"
+            f"〄 <b>Episode :</b> {episode}\n"
+            f"〄 <b>Audio :</b> {audio}\n"
+            f"〄 <b>Quality :</b> {quality}\n"
+            f"〄 <b>Status :</b> {status}\n"
+            f"〄 <b>Release Year :</b> {year}\n"
+            f"〄 <b>Genres :</b> {genres}\n"
+            f"〄 <b>Source :</b> {source}\n\n"
+            f"➽ <b>Nᴇᴛᴡᴏʀᴋ :-</b> "
+            f"@AnimeNetworkTamil ✓\n\n"
         )
-        opening = f"<blockquote expandable><b>📖 Synopsis of {title}\n"
-        closing = "</b></blockquote>"
-        available = max(0, 1024 - len(metadata) - len(opening) - len(closing))
+
+        # Expandable synopsis
+        opening = (
+            f"<blockquote expandable>"
+            f"📖 <b>Synopsis of {anime_name}</b>\n"
+        )
+        closing = "</blockquote>"
+
+        available = 1024 - len(metadata) - len(opening) - len(closing)
+
+        # Keep Telegram photo caption within 1024 characters
         escaped_synopsis = html.escape(synopsis)
+
         if len(escaped_synopsis) > available:
             synopsis = synopsis[:max(0, available - 10)].rsplit(" ", 1)[0] + "…"
-        caption = metadata + opening + "<b>" + html.escape(synopsis) + "</b>" + closing
+
+        caption = (
+            metadata
+            + opening
+            + html.escape(synopsis)
+            + closing
+        )
+
 
         await context.bot.send_photo(
-            chat_id=update.effective_chat.id,
+            chat_id=query.message.chat_id,
             photo=image,
             caption=caption,
             parse_mode=ParseMode.HTML,
             reply_markup=poster_keyboard(),
         )
-        await status_message.edit_text("✅ Poster Ready Aiduchu")
+        await query.message.reply_text(
+            "✅ Poster Ready Aiduchu"
+        )
     except Exception as error:
         log.exception("Poster creation failed")
-        await update.effective_message.reply_text(f"⚠️ Couldn't create poster: {error}")
-    finally:
-        context.user_data.pop("poster_workflow", None)
-        context.user_data.pop("awaiting_custom_image", None)
-        context.user_data.pop("awaiting_season", None)
+        await query.message.reply_text(f"⚠️ Couldn't create poster: {error}")
 
 
-async def incoming_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("awaiting_custom_image"):
-        await update.effective_message.reply_text("Use /p <anime name> to start a poster.")
-        return
-    photo = update.effective_message.photo
-    if photo:
-        file = await context.bot.get_file(photo[-1].file_id)
-        image_bytes = bytes(await file.download_as_bytearray())
-    else:
-        document = update.effective_message.document
-        if not document or not (document.mime_type or "").startswith("image/"):
-            await update.effective_message.reply_text("Please send a valid image file.")
-            return
-        file = await context.bot.get_file(document.file_id)
-        image_bytes = bytes(await file.download_as_bytearray())
-
-    try:
-        Image.open(io.BytesIO(image_bytes)).verify()
-    except Exception:
-        await update.effective_message.reply_text("That image could not be opened. Please send another image.")
-        return
-
-    workflow = context.user_data.get("poster_workflow")
-    if not workflow:
-        await update.effective_message.reply_text("Poster session expired. Run /p again.")
-        return
-    workflow["image_bytes"] = image_bytes
-    context.user_data["awaiting_custom_image"] = False
-    context.user_data["awaiting_season"] = True
-    current = workflow["data"].get("season") or "Unknown"
+async def text_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(
-        "✅ Your image is selected.\n\n"
-        f"🔢 Enter season number for {workflow['data']['title']} (example: 2).\n"
-        f"TMDB suggestion: {current}\n"
-        "Send 0 for movie/no season, or type skip to keep the TMDB suggestion."
-    )
-
-
-async def incoming_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text_value = (update.effective_message.text or "").strip()
-    workflow = context.user_data.get("poster_workflow")
-
-    if context.user_data.get("awaiting_season") and workflow:
-        if text_value.lower() == "skip":
-            workflow["data"]["manual_season"] = workflow["data"].get("season") or "Unknown"
-        elif text_value == "0":
-            workflow["data"]["manual_season"] = "Not Applicable"
-        else:
-            match = re.fullmatch(r"(?:season\s*)?(\d{1,3})", text_value, re.IGNORECASE)
-            if not match:
-                await update.effective_message.reply_text(
-                    "Please send a season number such as 1, 2, or 12. Send 0 for no season."
-                )
-                return
-            number = int(match.group(1))
-            if number < 1 or number > 999:
-                await update.effective_message.reply_text("Season number must be between 1 and 999.")
-                return
-            workflow["data"]["manual_season"] = f"Season {number:02d}"
-        context.user_data["awaiting_season"] = False
-        await finish_poster(update, context)
-        return
-
-    await update.effective_message.reply_text(
-        "Use /p followed by an anime name. Example: /p Naruto Shippuden"
+        "Use /poster followed by an anime name.\n"
+        "Example: /poster Naruto Shippuden"
     )
 
 
@@ -906,13 +813,10 @@ def main():
         CallbackQueryHandler(poster_callback, pattern=r"^poster:\d+$")
     )
     app.add_handler(
-        CallbackQueryHandler(image_callback, pattern=r"^img:(?:\d+|upload)$")
+        CallbackQueryHandler(template_callback, pattern=r"^template:\d+:[a-z]+$")
     )
     app.add_handler(
-        MessageHandler(filters.PHOTO | filters.Document.IMAGE, incoming_photo)
-    )
-    app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, incoming_text)
+        MessageHandler(filters.TEXT & ~filters.COMMAND, text_fallback)
     )
 
     log.info("AnimeNetworkTamil Poster Bot started")
