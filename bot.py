@@ -694,8 +694,8 @@ async def poster_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Metadata outside expandable blockquote
         metadata = (
-            f"🎌 <b>Title :</b> {title}\n"
-            f"〄 <b>Season :</b> {season}\n"
+            f"🎌 <b>Title : {title}</b>\n"
+            f"〄 <b>Season : {season}</b>\n"
             f"〄 <b>Episode :</b> {episode}\n"
             f"〄 <b>Audio :</b> {audio}\n"
             f"〄 <b>Quality :</b> {quality}\n"
