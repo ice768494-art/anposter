@@ -694,22 +694,22 @@ async def poster_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Every caption field is bold, including its value.
         metadata = (
-            f"<b>🎌 Title : {title}\\n"
-            f"〄 Season : {season}\\n"
-            f"〄 Episode : {episode}\\n"
-            f"〄 Audio : {audio}\\n"
-            f"〄 Quality : {quality}\\n"
-            f"〄 Status : {status}\\n"
-            f"〄 Release Year : {year}\\n"
-            f"〄 Genres : {genres}\\n"
-            f"〄 Source : {source}\\n\\n"
-            f"➽ Nᴇᴛᴡᴏʀᴋ :- @AnimeNetworkTamil ✓</b>\\n\\n"
+            f"<b>🎌 Title : {title}\n"
+            f"〄 Season : {season}\n"
+            f"〄 Episode : {episode}\n"
+            f"〄 Audio : {audio}\n"
+            f"〄 Quality : {quality}\n"
+            f"〄 Status : {status}\n"
+            f"〄 Release Year : {year}\n"
+            f"〄 Genres : {genres}\n"
+            f"〄 Source : {source}\n\\n"
+            f"➽ Nᴇᴛᴡᴏʀᴋ :- @AnimeNetworkTamil ✓</b>\n\\n"
         )
 
         # Expandable synopsis: heading and synopsis text are both bold.
         opening = (
             f"<blockquote expandable>"
-            f"<b>📖 Synopsis of {anime_name}\\n"
+            f"<b>📖 Synopsis of {anime_name}\n"
         )
         closing = "</b></blockquote>"
 
