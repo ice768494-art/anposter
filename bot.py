@@ -692,27 +692,26 @@ async def poster_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         anime_name = title
 
-        # Metadata outside expandable blockquote
+        # Every caption field is bold, including its value.
         metadata = (
-            f"🎌 <b>Title : {title}</b>\n"
-            f"〄 <b>Season : {season}</b>\n"
-            f"〄 <b>Episode :</b> {episode}\n"
-            f"〄 <b>Audio :</b> {audio}\n"
-            f"〄 <b>Quality :</b> {quality}\n"
-            f"〄 <b>Status :</b> {status}\n"
-            f"〄 <b>Release Year :</b> {year}\n"
-            f"〄 <b>Genres :</b> {genres}\n"
-            f"〄 <b>Source :</b> {source}\n\n"
-            f"➽ <b>Nᴇᴛᴡᴏʀᴋ :-</b> "
-            f"@AnimeNetworkTamil ✓\n\n"
+            f"<b>🎌 Title : {title}\\n"
+            f"〄 Season : {season}\\n"
+            f"〄 Episode : {episode}\\n"
+            f"〄 Audio : {audio}\\n"
+            f"〄 Quality : {quality}\\n"
+            f"〄 Status : {status}\\n"
+            f"〄 Release Year : {year}\\n"
+            f"〄 Genres : {genres}\\n"
+            f"〄 Source : {source}\\n\\n"
+            f"➽ Nᴇᴛᴡᴏʀᴋ :- @AnimeNetworkTamil ✓</b>\\n\\n"
         )
 
-        # Expandable synopsis
+        # Expandable synopsis: heading and synopsis text are both bold.
         opening = (
             f"<blockquote expandable>"
-            f"📖 <b>Synopsis of {anime_name}</b>\n"
+            f"<b>📖 Synopsis of {anime_name}\\n"
         )
-        closing = "</blockquote>"
+        closing = "</b></blockquote>"
 
         available = 1024 - len(metadata) - len(opening) - len(closing)
 
@@ -725,7 +724,7 @@ async def poster_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption = (
             metadata
             + opening
-            + html.escape(synopsis)
+            + "<b>" + html.escape(synopsis) + "</b>"
             + closing
         )
 
