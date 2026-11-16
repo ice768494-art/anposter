@@ -371,8 +371,9 @@ async def episodes_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  f"<b>〄 Quality :</b> 480P | 720P | 1080P\n"
                  f"<b>〄 Status :</b> {info.get('status_label','AVAILABLE')}\n"
                  f"<b>〄 Year :</b> {year or 'N/A'}\n"
-                 f"<b>〄 Genre :</b> {genres}</b>\n\n"
-                 f"<blockquote expandable><b>Synopsis :</b> {overview}</blockquote>")
+                 f"<b>〄 Genre :</b> {genres}</b>\n"
+                 f"<b>➽ Nᴇᴛᴡᴏʀᴋ :- @AnimeNetworkTamil ✓</b>\n\n"
+                 f"<blockquote expandable><b>Synopsis : {overview}</b></blockquote>")
         await update.message.reply_photo(photo=poster_img, caption=caption, parse_mode=ParseMode.HTML)
     except Exception as e:
         log.exception("Poster generation failed")
