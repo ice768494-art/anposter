@@ -1,832 +1,381 @@
-import asyncio
-import html
-import io
-import logging
-import os
-import re
-import threading
-from pathlib import Path
-
+import os, io, logging, asyncio, textwrap
+from typing import Optional
 import requests
-from dotenv import load_dotenv
-from flask import Flask
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
-from telegram.ext import (
-    Application,
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
-)
+from telegram.ext import (Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+                          ContextTypes, ConversationHandler, filters)
 
-# -------------------- Render health server --------------------
-
-web_app = Flask(__name__)
-
-
-@web_app.route("/")
-def home():
-    return "Anime Poster Bot is running!", 200
-
-
-@web_app.route("/health")
-def health():
-    return "OK", 200
-
-
-def run_web_server():
-    port = int(os.environ.get("PORT", "10000"))
-    web_app.run(host="0.0.0.0", port=port, use_reloader=False)
-
-
-# -------------------- Configuration --------------------
-
-load_dotenv()
-
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("anime-poster-bot")
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TMDB_TOKEN = os.getenv("TMDB_READ_ACCESS_TOKEN", "").strip()
 TMDB_KEY = os.getenv("TMDB_API_KEY", "").strip()
-
-WATCH_NOW_URL = os.getenv(
-    "WATCH_NOW_URL", "https://t.me/AnimeNetworkTamil"
-).strip()
-JOIN_TELEGRAM_URL = os.getenv(
-    "JOIN_TELEGRAM_URL", "https://t.me/AnimeNetworkTamil"
-).strip()
-CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@AnimeNetworkTamil").strip()
-
-API = "https://api.themoviedb.org/3"
+CHANNEL = os.getenv("CHANNEL_USERNAME", "@AnimeNetworkTamil").strip()
+TMDB_API = "https://api.themoviedb.org/3"
 IMG = "https://image.tmdb.org/t/p/"
-LOGO = Path(__file__).parent / "assets" / "channel_logo.jpg"
 
-W, H = 1920, 1080
-DEFAULT_QUALITIES = ["480P", "720P", "1080P"]
-DEFAULT_QUALITY = "  •  ".join(DEFAULT_QUALITIES)
-DEFAULT_AUDIO = "Tamil Audio"
-DEFAULT_JOIN = f"Telegram Join → {CHANNEL_USERNAME}"
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-)
-log = logging.getLogger("AnimeNetworkTamil")
-
-http = requests.Session()
-http.headers["Accept"] = "application/json"
-if TMDB_TOKEN:
-    http.headers["Authorization"] = "Bearer " + TMDB_TOKEN
-
-
-# -------------------- TMDB helpers --------------------
-
-def api(path, params=None):
-    params = dict(params or {})
-    if not TMDB_TOKEN:
-        if not TMDB_KEY:
-            raise RuntimeError(
-                "Add TMDB_READ_ACCESS_TOKEN or TMDB_API_KEY to Render Environment."
-            )
-        params["api_key"] = TMDB_KEY
-
-    response = http.get(API + path, params=params, timeout=25)
-    if response.status_code == 401:
-        raise RuntimeError(
-            "TMDB credential rejected. Check your Render Environment variables."
-        )
-    response.raise_for_status()
-    return response.json()
-
-
-def search(query):
-    results = []
-    for kind in ("tv", "movie"):
-        data = api(
-            "/search/" + kind,
-            {
-                "query": query,
-                "include_adult": "false",
-                "language": "en-US",
-                "page": 1,
-            },
-        )
-        for item in data.get("results", []):
-            item["kind"] = kind
-            item["title"] = (
-                item.get("name")
-                or item.get("title")
-                or item.get("original_name")
-                or item.get("original_title")
-                or "Untitled"
-            )
-            item["date"] = (
-                item.get("first_air_date") or item.get("release_date") or ""
-            )
-            results.append(item)
-
-    results.sort(key=lambda item: item.get("popularity", 0), reverse=True)
-    return [item for item in results if item.get("poster_path")][:8]
-
-
-def details(item):
-    data = api(f"/{item['kind']}/{item['id']}", {"language": "en-US"})
-
-    season_list = [
-        s for s in data.get("seasons", [])
-        if s.get("season_number", 0) > 0
-    ]
-
-    first_season = min(
-        season_list,
-        key=lambda s: s["season_number"],
-        default=None
-    )
-
-    season_label = (
-        f"Season {first_season['season_number']:02d}"
-        if first_season else "Unknown"
-    )
-
-    return {
-        "title": data.get("name") or data.get("title") or item["title"],
-        "overview": (
-            data.get("overview")
-            or item.get("overview")
-            or "Synopsis unavailable."
-        ).strip(),
-        "year": (
-            data.get("first_air_date")
-            or data.get("release_date")
-            or item.get("date")
-            or ""
-        )[:4],
-        "rating": data.get("vote_average") or item.get("vote_average") or 0,
-        "genres": [
-            genre["name"]
-            for genre in data.get("genres", [])
-            if genre.get("name")
-        ][:3],
-        "media_type": "TV SERIES" if item.get("kind") == "tv" else "MOVIE",
-        "status": data.get("status") or "",
-        "season": season_label,
-        "episodes": data.get("number_of_episodes"),
-        "runtime": (data.get("episode_run_time") or [None])[0]
-            if item.get("kind") == "tv" else data.get("runtime"),
-        "studio": next((company.get("name", "") for company in data.get("production_companies", []) if company.get("name")), ""),
-        "poster_path": data.get("poster_path") or item.get("poster_path"),
-    }
-
-
-# -------------------- Image helpers --------------------
-
-def font(size, bold=False):
-    paths = [
-        (
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-            if bold
-            else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-        ),
-        (
-            "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"
-            if bold
-            else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"
-        ),
-    ]
-    for path in paths:
-        try:
-            return ImageFont.truetype(path, size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
-
-
-def wrap(draw, text, fnt, maxw):
-    lines, current = [], ""
-    for word in text.split():
-        test = (current + " " + word).strip()
-        if draw.textbbox((0, 0), test, font=fnt)[2] <= maxw:
-            current = test
-        else:
-            if current:
-                lines.append(current)
-            if draw.textbbox((0, 0), word, font=fnt)[2] > maxw:
-                current = ""
-                for char in word:
-                    candidate = current + char
-                    if draw.textbbox((0, 0), candidate, font=fnt)[2] <= maxw:
-                        current = candidate
-                    else:
-                        if current:
-                            lines.append(current)
-                        current = char
-            else:
-                current = word
-    if current:
-        lines.append(current)
-    return lines
-
-
-def put_lines(draw, lines, xy, fnt, fill, gap=12, stroke=0, stroke_fill="#000"):
-    x, y = xy
-    for line in lines:
-        draw.text(
-            (x, y), line, font=fnt, fill=fill,
-            stroke_width=stroke, stroke_fill=stroke_fill,
-        )
-        bounds = draw.textbbox((x, y), line, font=fnt, stroke_width=stroke)
-        y += bounds[3] - bounds[1] + gap
-    return y
-
-
-def centered_text(draw, box, text, fnt, fill):
-    x1, y1, x2, y2 = box
-    bounds = draw.textbbox((0, 0), text, font=fnt)
-    text_w = bounds[2] - bounds[0]
-    text_h = bounds[3] - bounds[1]
-    x = x1 + (x2 - x1 - text_w) // 2
-    y = y1 + (y2 - y1 - text_h) // 2 - bounds[1]
-    draw.text((x, y), text, font=fnt, fill=fill)
-
-
-def draw_quality_buttons(draw, x, y, max_width, button_color="#FFC857"):
-    """Three bold quality buttons spanning the entire available row."""
-    labels = DEFAULT_QUALITIES
-    gap = 16
-    button_h = 82
-    button_w = (max_width - gap * (len(labels) - 1)) // len(labels)
-    label_font = font(36, True)
-
-    for index, label in enumerate(labels):
-        x1 = x + index * (button_w + gap)
-        x2 = x1 + button_w
-        if index == len(labels) - 1:
-            x2 = x + max_width
-        draw.rounded_rectangle(
-            (x1, y, x2, y + button_h),
-            radius=18,
-            fill=button_color,
-            outline="#FFFFFF",
-            width=3,
-        )
-        centered_text(
-            draw, (x1, y, x2, y + button_h), label, label_font, "#171923"
-        )
-
-
-def draw_telegram_join(draw, x, y, width):
-    """Draw a large blue Telegram-style banner with a paper-plane mark."""
-    height = 82
-    draw.rounded_rectangle(
-        (x, y, x + width, y + height),
-        radius=19,
-        fill="#168DE2",
-        outline="#FFFFFF",
-        width=3,
-    )
-
-    cx, cy, radius = x + 51, y + height // 2, 29
-    draw.ellipse(
-        (cx - radius, cy - radius, cx + radius, cy + radius),
-        fill="#FFFFFF",
-    )
-    draw.polygon(
-        [
-            (cx - 17, cy - 10),
-            (cx + 19, cy - 19),
-            (cx + 8, cy + 19),
-            (cx, cy + 5),
-            (cx - 9, cy + 12),
-            (cx - 7, cy - 1),
-        ],
-        fill="#168DE2",
-    )
-
-    label = f"JOIN TELEGRAM  {CHANNEL_USERNAME}"
-    label_font = font(30, True)
-    available_width = width - 105
-    while draw.textbbox((0, 0), label, font=label_font)[2] > available_width:
-        if label_font.size <= 18:
-            break
-        label_font = font(label_font.size - 1, True)
-
-    bounds = draw.textbbox((0, 0), label, font=label_font)
-    text_h = bounds[3] - bounds[1]
-    draw.text(
-        (x + 96, y + (height - text_h) // 2 - bounds[1]),
-        label,
-        font=label_font,
-        fill="#FFFFFF",
-    )
-
-
+SEARCH, IMAGE, SEASON, EPISODES = range(4)
 TEMPLATES = {
-    "cinematic": {"label": "🎬 Cinematic Dark", "accent": "#FF3158", "gold": "#FFB547", "soft": "#FFCF78", "button": "#FFC857", "overlay": (5, 7, 18, 125)},
-    "neon": {"label": "⚡ Neon Blue", "accent": "#00D9FF", "gold": "#7DEBFF", "soft": "#BDF7FF", "button": "#00CFE8", "overlay": (0, 15, 30, 155)},
-    "purple": {"label": "💜 Purple Glow", "accent": "#A970FF", "gold": "#D2AEFF", "soft": "#E8D7FF", "button": "#A970FF", "overlay": (20, 5, 35, 155)},
-    "minimal": {"label": "✨ Minimal Clean", "accent": "#E6E8EF", "gold": "#D4D8E3", "soft": "#FFFFFF", "button": "#E6E8EF", "overlay": (12, 14, 22, 165)},
+    "neon_info": "Neon Info (Reference)",
+    "cinematic": "Cinematic",
+    "broadcast": "Broadcast",
+    "magazine": "Magazine",
+    "minimal": "Minimal",
+    "retro": "Retro",
+    "purple": "Purple Night",
+    "mono": "Monochrome",
+    "editorial": "Editorial",
 }
 
 
-def make_poster(info, template="cinematic"):
-    style = TEMPLATES.get(template, TEMPLATES["cinematic"])
-    accent = style["accent"]
-    gold = style["gold"]
-    soft = style["soft"]
-    button_color = style["button"]
-    if not info.get("poster_path"):
-        raise RuntimeError("No poster artwork found.")
-
-    response = http.get(IMG + "w780" + info["poster_path"], timeout=30)
-    response.raise_for_status()
-    poster = Image.open(io.BytesIO(response.content)).convert("RGB")
-
-    bg = ImageOps.fit(
-        poster, (W, H), method=Image.Resampling.LANCZOS
-    ).filter(ImageFilter.GaussianBlur(28))
-    bg = Image.eval(bg, lambda pixel: int(pixel * 0.36)).convert("RGBA")
-    bg.alpha_composite(Image.new("RGBA", (W, H), style["overlay"]))
-    canvas = bg
-
-    # Original vertical poster artwork on the left.
-    poster_w, poster_h = poster.size
-    display_h = 820
-    display_w = int(poster_w * display_h / poster_h)
-    if display_w > 590:
-        display_w, display_h = 590, int(poster_h * 590 / poster_w)
-    poster = poster.resize((display_w, display_h), Image.Resampling.LANCZOS)
-    poster_x, poster_y = 72, (H - display_h) // 2
-
-    shadow = Image.new(
-        "RGBA", (display_w + 50, display_h + 50), (0, 0, 0, 0)
-    )
-    ImageDraw.Draw(shadow).rounded_rectangle(
-        (20, 20, display_w + 30, display_h + 30),
-        radius=18,
-        fill=(0, 0, 0, 180),
-    )
-    canvas.alpha_composite(
-        shadow.filter(ImageFilter.GaussianBlur(18)),
-        (poster_x - 24, poster_y - 24),
-    )
-    canvas.alpha_composite(poster.convert("RGBA"), (poster_x, poster_y))
-    draw = ImageDraw.Draw(canvas)
-
-    tx, maxw = 735, 1090
-    title = info["title"].upper()
-    # Fit the complete title: allow extra lines and reduce font size as needed.
-    title_size = 94 if len(title) <= 15 else 82 if len(title) <= 22 else 68
-    title_font = font(title_size, True)
-    title_lines = wrap(draw, title, title_font, maxw)
-    while title_size > 30:
-        line_height = max(1, draw.textbbox((0, 0), "Ag", font=title_font)[3])
-        if len(title_lines) <= 4 and line_height * len(title_lines) + 10 * (len(title_lines) - 1) <= 285:
-            break
-        title_size -= 2
-        title_font = font(title_size, True)
-        title_lines = wrap(draw, title, title_font, maxw)
-    y = put_lines(
-        draw, title_lines,
-        (tx, 54), title_font, "#FFFFFF", 7, 3, "#101322"
-    )
-
-    # A small label identifies the selected design.
-    template_label = style["label"].upper()
-    label_font = font(17, True)
-    draw.text((tx, y + 2), template_label, font=label_font, fill=gold)
-    y += 28
-
-    # Genres now appear directly below the anime title.
-    genres = info.get("genres", [])
-    genre_text = "  •  ".join(genres)
-    y += 12
-
-    if genre_text:
-        genre_font = font(27, True)
-        while (
-            draw.textbbox((0, 0), genre_text, font=genre_font)[2] > maxw
-            and genre_font.size > 18
-        ):
-            genre_font = font(genre_font.size - 1, True)
-
-        draw.text(
-            (tx, y),
-            genre_text,
-            font=genre_font,
-            fill=soft,
-        )
-        y += 44
-
-    draw.rounded_rectangle(
-        (tx, y, tx + 175, y + 9), radius=4, fill=accent
-    )
-    y += 35
-    draw.text((tx, y), "SYNOPSIS", font=font(29, True), fill=gold)
-    y += 48
-
-    synopsis = re.sub(
-        r"\s+", " ", info.get("overview", "")
-    ).strip() or "Synopsis unavailable."
-    if len(synopsis) > 620:
-        synopsis = synopsis[:620].rsplit(" ", 1)[0].rstrip(" ,;:-") + "…"
-    # Keep the synopsis readable but reserve a predictable area for details.
-    synopsis_lines = wrap(draw, synopsis, font(25), maxw)[:5]
-    y = put_lines(
-        draw, synopsis_lines, (tx, y), font(25), "#F0F1FA", 9
-    )
-
-    # Build useful metadata instead of leaving a large blank block.
-    metadata = []
-    if info.get("year"):
-        metadata.append(str(info["year"]))
-    if info.get("rating"):
-        try:
-            metadata.append(f"TMDB ★ {float(info['rating']):.1f}/10")
-        except (ValueError, TypeError):
-            pass
-    if info.get("media_type"):
-        metadata.append(info["media_type"])
-    if info.get("seasons"):
-        metadata.append(f"{info['seasons']} SEASON" + ("S" if info["seasons"] != 1 else ""))
-    if info.get("episodes"):
-        metadata.append(f"{info['episodes']} EPISODES")
-    if info.get("runtime"):
-        metadata.append(f"{info['runtime']} MIN")
-    if info.get("status"):
-        metadata.append(str(info["status"]).upper())
-    if info.get("studio"):
-        metadata.append("STUDIO: " + str(info["studio"]))
-
-    meta_y = max(y + 18, 565)
-    meta_y = min(meta_y, 580)
-    panel_h = 94
-    draw.rounded_rectangle(
-        (tx, meta_y - 12, tx + maxw, meta_y + panel_h),
-        radius=18,
-        fill=(18, 22, 36, 205),
-        outline=gold,
-        width=2,
-    )
-    draw.text(
-        (tx + 22, meta_y), "ANIME DETAILS",
-        font=font(19, True), fill=gold
-    )
-    meta_font = font(20, True)
-    meta_text = "  •  ".join(metadata) if metadata else "Details unavailable"
-    meta_lines = wrap(draw, meta_text, meta_font, maxw - 44)[:2]
-    put_lines(
-        draw, meta_lines, (tx + 22, meta_y + 34), meta_font,
-        soft, 5
-    )
-
-    # Clear section label makes the quality choices feel intentional.
-    draw.text(
-        (tx, 690), "AVAILABLE QUALITIES",
-        font=font(18, True), fill="#D9DCE8"
-    )
-    draw_quality_buttons(draw, tx, 720, maxw, button_color)
-    # Draw the speaker symbol with vector shapes so it renders consistently
-    # even on servers whose installed fonts do not contain emoji glyphs.
-    speaker_y = 826
-    draw.polygon(
-        [
-            (tx + 4, speaker_y + 17),
-            (tx + 22, speaker_y + 17),
-            (tx + 43, speaker_y + 2),
-            (tx + 43, speaker_y + 54),
-            (tx + 22, speaker_y + 39),
-            (tx + 4, speaker_y + 39),
-        ],
-        fill="#35A9FF",
-    )
-    draw.arc(
-        (tx + 35, speaker_y + 5, tx + 70, speaker_y + 51),
-        start=-65, end=65, fill="#35A9FF", width=6,
-    )
-    draw.arc(
-        (tx + 40, speaker_y - 3, tx + 84, speaker_y + 59),
-        start=-65, end=65, fill="#35A9FF", width=5,
-    )
-    draw.text(
-        (tx + 100, 818),
-        DEFAULT_AUDIO,
-        font=font(40, True),
-        fill="#FFFFFF",
-        stroke_width=2,
-        stroke_fill="#111222",
-    )
-    draw_telegram_join(draw, tx, 900, maxw)
-
-    # Existing channel logo and watermark.
-    if LOGO.exists():
-        try:
-            logo = Image.open(LOGO).convert("RGBA")
-            logo.thumbnail((155, 105), Image.Resampling.LANCZOS)
-            logo.putalpha(
-                logo.getchannel("A").point(lambda alpha: int(alpha * 0.95))
-            )
-            canvas.alpha_composite(
-                logo, (W - logo.width - 40, H - logo.height - 34)
-            )
-        except Exception:
-            log.exception("Could not load channel logo")
-
-    draw = ImageDraw.Draw(canvas)
-    draw.text(
-        (W - 35, H - 8),
-        "ANIMENETWORKTAMIL",
-        font=font(19, True),
-        fill="#FFFFFF",
-        anchor="rs",
-        stroke_width=2,
-        stroke_fill="#111222",
-    )
-
-    output = io.BytesIO()
-    canvas.convert("RGB").save(
-        output, format="JPEG", quality=94, optimize=True
-    )
-    output.seek(0)
-    safe_title = re.sub(
-        r"[^a-zA-Z0-9_-]+", "-", info["title"]
-    ).strip("-").lower()
-    output.name = (safe_title or "anime") + "-AnimeNetworkTamil.jpg"
-    return output
+def tmdb(path: str, params=None):
+    params = dict(params or {})
+    headers = {}
+    if TMDB_TOKEN:
+        headers["Authorization"] = f"Bearer {TMDB_TOKEN}"
+    elif TMDB_KEY:
+        params["api_key"] = TMDB_KEY
+    else:
+        raise RuntimeError("Set TMDB_READ_ACCESS_TOKEN or TMDB_API_KEY in environment variables.")
+    r = requests.get(TMDB_API + path, params=params, headers=headers, timeout=25)
+    r.raise_for_status()
+    return r.json()
 
 
-def poster_keyboard():
-    """Real clickable Telegram buttons shown below the poster photo."""
-    rows = []
-    if WATCH_NOW_URL:
-        rows.append([
-            InlineKeyboardButton("▶️ Watch Now", url=WATCH_NOW_URL)
-        ])
-    if JOIN_TELEGRAM_URL:
-        rows.append([
-            InlineKeyboardButton("✈️ Join Telegram", url=JOIN_TELEGRAM_URL)
-        ])
-    return InlineKeyboardMarkup(rows) if rows else None
+def fetch_image(path: Optional[str], size="w1280") -> Optional[Image.Image]:
+    if not path:
+        return None
+    try:
+        r = requests.get(IMG + size + path, timeout=25)
+        r.raise_for_status()
+        return Image.open(io.BytesIO(r.content)).convert("RGB")
+    except Exception as e:
+        log.warning("Image download failed: %s", e)
+        return None
 
 
-# -------------------- Telegram commands --------------------
+def font(size: int, bold=False):
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return ImageFont.truetype(p, size)
+    return ImageFont.load_default()
+
+
+def cover(im: Optional[Image.Image], size, fallback=(10, 22, 20)):
+    w, h = size
+    if im is None:
+        out = Image.new("RGB", size, fallback)
+        d = ImageDraw.Draw(out)
+        for x in range(0, w, 90):
+            d.line((x, 0, x-180, h), fill=(15, 65, 48), width=3)
+        return out
+    ratio = max(w / im.width, h / im.height)
+    im = im.resize((int(im.width*ratio), int(im.height*ratio)), Image.Resampling.LANCZOS)
+    x = (im.width-w)//2; y = (im.height-h)//2
+    return im.crop((x, y, x+w, y+h))
+
+
+def fit_text(draw, text, max_width, start=70, minimum=24, bold=True):
+    for size in range(start, minimum-1, -2):
+        f = font(size, bold)
+        if draw.textbbox((0, 0), text, font=f)[2] <= max_width:
+            return f
+    return font(minimum, bold)
+
+
+def wrap_lines(draw, text, fnt, max_width, max_lines=8):
+    words = str(text or "").replace("\n", " ").split()
+    lines, line = [], ""
+    for word in words:
+        test = (line + " " + word).strip()
+        if draw.textbbox((0, 0), test, font=fnt)[2] <= max_width:
+            line = test
+        else:
+            if line: lines.append(line)
+            line = word
+    if line: lines.append(line)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        while lines[-1] and draw.textbbox((0, 0), lines[-1] + "…", font=fnt)[2] > max_width:
+            lines[-1] = lines[-1][:-1]
+        lines[-1] = lines[-1].rstrip() + "…"
+    return lines
+
+
+def make_poster(info: dict, hero: Image.Image, thumbs: list, template="neon_info", season="1", episodes="1 - 12") -> io.BytesIO:
+    W, H = 1920, 1080
+    base = cover(hero, (W, H))
+    base = ImageEnhance.Color(base).enhance(1.25).filter(ImageFilter.GaussianBlur(1.2))
+    # Darken background while retaining the selected anime image.
+    shade = Image.new("RGBA", (W, H), (0, 8, 7, 105 if template != "minimal" else 145))
+    base = Image.alpha_composite(base.convert("RGBA"), shade)
+    # Left-to-right shadow helps information remain readable.
+    grad = Image.new("RGBA", (W, H)); gd = ImageDraw.Draw(grad)
+    for x in range(W):
+        a = int(185 * (1 - x/W) ** 1.35)
+        gd.line((x, 0, x, H), fill=(0, 0, 0, a))
+    base = Image.alpha_composite(base, grad)
+    d = ImageDraw.Draw(base)
+    accent = (55, 255, 150, 255) if template in ("neon_info", "broadcast") else (255, 190, 50, 255)
+    panel = (0, 0, 0, 205)
+    # Header title area
+    title = (info.get("name") or "ANIME").upper()
+    title_font = fit_text(d, title, 790, 105, 45, True)
+    d.text((48, 34), title, font=title_font, fill=(255, 255, 255, 255), stroke_width=5, stroke_fill=(0, 0, 0, 230))
+    subtitle = "ANIME SERIES" if info.get("media_type") == "tv" else "ANIME MOVIE"
+    d.text((58, 150), subtitle, font=font(28, True), fill=accent, stroke_width=1, stroke_fill=(0,0,0,255))
+
+    # Info tiles, matching the reference layout.
+    left, top, gap = 30, 218, 16
+    tiles = [
+        ("STATUS", info.get("status_label", "AVAILABLE"), "▶"),
+        ("SEASON", f"Season {season}", "▰"),
+        ("AUDIO", info.get("audio", "TAMIL"), "♫"),
+        ("QUALITY", info.get("quality", "480P | 720P | 1080P"), "HD"),
+        ("GENRE", info.get("genres", "ANIME"), "✦"),
+        ("SOURCE", info.get("source", "ANIMENETWORKTAMIL"), "◉"),
+    ]
+    widths = [320, 340, 320, 480, 440, 350]
+    positions = [(left,top),(left+336,top),(left,top+96),(left+336,top+96),(left,top+192),(left+456,top+192)]
+    for (label, value, symbol), (x,y), ww in zip(tiles, positions, widths):
+        d.rounded_rectangle((x,y,x+ww,y+82), radius=12, fill=panel, outline=accent, width=3)
+        d.text((x+16,y+9), symbol, font=font(34, True), fill=accent)
+        d.text((x+66,y+8), label, font=font(19, True), fill=(245,245,245,255))
+        vf = fit_text(d, str(value), ww-82, 29, 17, True)
+        d.text((x+66,y+36), str(value), font=vf, fill=(255, 211, 55, 255))
+
+    # Synopsis card at lower left.
+    sx, sy, sw, sh = 30, 506, 440, 520
+    d.rounded_rectangle((sx,sy,sx+sw,sy+sh), radius=14, fill=panel, outline=accent, width=3)
+    d.text((sx+22,sy+18), "▣  SYNOPSIS", font=font(31, True), fill=(255, 210, 45, 255))
+    synopsis = info.get("overview") or "Synopsis not available."
+    sf = font(24, False)
+    for i, line in enumerate(wrap_lines(d, synopsis, sf, sw-44, 15)):
+        d.text((sx+22, sy+72+i*29), line, font=sf, fill=(245,245,245,255))
+
+    # Four scene previews across the lower middle/right.
+    thumb_x, thumb_y, tw, th, tg = 490, 688, 340, 200, 16
+    for i in range(4):
+        im = thumbs[i] if i < len(thumbs) else None
+        tile = cover(im, (tw,th), (12,35,27))
+        x = thumb_x + i*(tw+tg)
+        base.alpha_composite(tile.convert("RGBA"), (x,thumb_y))
+        d = ImageDraw.Draw(base)
+        d.rounded_rectangle((x,thumb_y,x+tw,thumb_y+th), radius=12, outline=accent, width=4)
+
+    # Episode strip
+    ex, ey = 500, 914
+    d.rounded_rectangle((ex,ey,ex+1410,ey+94), radius=14, fill=(0,0,0,205), outline=accent, width=3)
+    d.text((ex+40,ey+13), "EPISODE :", font=font(46, True), fill=(255,255,255,255))
+    d.text((ex+345,ey+13), str(episodes), font=font(48, True), fill=(255,215,45,255))
+    d.text((ex+1040,ey+17), info.get("status_label", "ONGOING").upper(), font=font(38, True), fill=accent)
+
+    # Footer/channel tag
+    footer = CHANNEL if CHANNEL else "ANIME NETWORK TAMIL"
+    d.text((W-520,H-48), footer, font=font(22,True), fill=(255,255,255,220), stroke_width=2, stroke_fill=(0,0,0,220))
+    out = io.BytesIO(); base.convert("RGB").save(out, "JPEG", quality=93, optimize=True); out.seek(0)
+    return out
+
+
+def template_keyboard():
+    keys = list(TEMPLATES.items())
+    rows = [[InlineKeyboardButton(label, callback_data=f"tpl:{key}")] for key,label in keys]
+    return InlineKeyboardMarkup(rows)
+
+
+def get_images(info):
+    kind, mid = info["media_type"], info["id"]
+    try:
+        data = tmdb(f"/{kind}/{mid}/images", {"include_image_language":"en,null"})
+        paths = [x["file_path"] for x in data.get("backdrops", [])[:6]]
+        if not paths: paths = [x["file_path"] for x in data.get("posters", [])[:6]]
+        return paths
+    except Exception as e:
+        log.warning("Could not get image list: %s", e)
+        return [info.get("backdrop_path") or info.get("poster_path")]
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_message.reply_text(
-        "🎌 Welcome to AnimeNetworkTamil Poster Bot!\n\n"
-        "Create 16:9 (1920×1080) anime posters with synopsis, year, rating, "
-        "genres below the title, large quality buttons, a Telegram logo banner, "
-        "channel logo and watermark.\n\n"
-        "Commands:\n"
-        "/p <anime name>\n"
-        "/search <anime name>\n"
-        "/synopsis <anime name>\n"
-        "/help"
-    )
+    await update.message.reply_text(
+        "🎨 *Anime Poster Bot*\n\nUse `/p Naruto Shippuden` to create a poster.\nYou can choose a TMDB image or upload your own, select a template, and enter the season and episode range manually.",
+        parse_mode=ParseMode.MARKDOWN)
 
 
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_message.reply_text(
-        "Commands:\n"
-        "/p <anime name> — create a 16:9 poster\n"
-        "/search <anime name> — search titles\n"
-        "/synopsis <anime name> — get synopsis and metadata\n"
-        "/help — show commands\n\n"
-        "Example: /poster Naruto Shippuden"
-    )
-
-
-async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def poster(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).strip()
     if not query:
-        await update.effective_message.reply_text(
-            "Usage: /p <anime name>\nExample: /poster Solo Leveling"
-        )
-        return
-
-    message = await update.effective_message.reply_text("🔎 Searching TMDB…")
+        await update.message.reply_text("Send an anime name: `/p Naruto Shippuden`", parse_mode=ParseMode.MARKDOWN)
+        return ConversationHandler.END
     try:
-        items = search(query)
-        if not items:
-            await message.edit_text(
-                "No poster results found. Try another spelling."
-            )
-            return
-
-        context.user_data["results"] = {
-            str(index): item for index, item in enumerate(items)
-        }
-        buttons = []
-        for index, item in enumerate(items):
-            label = item["title"] + (
-                f" ({item['date'][:4]})" if item["date"] else ""
-            )
-            buttons.append([
-                InlineKeyboardButton(
-                    label[:58], callback_data=f"poster:{index}"
-                )
-            ])
-        await message.edit_text(
-            "Choose the correct title:",
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
-    except Exception as error:
+        data = tmdb("/search/multi", {"query":query, "include_adult":"false"})
+        results = [x for x in data.get("results",[]) if x.get("media_type") in ("tv","movie")][:8]
+        if not results:
+            await update.message.reply_text("No matching title found. Try another spelling.")
+            return ConversationHandler.END
+        context.user_data["results"] = results
+        rows=[]
+        for i,x in enumerate(results):
+            name=x.get("name") or x.get("title") or "Untitled"
+            year=(x.get("first_air_date") or x.get("release_date") or "")[:4]
+            rows.append([InlineKeyboardButton(f"{name} {('('+year+')') if year else ''} · {x['media_type'].upper()}", callback_data=f"pick:{i}")])
+        await update.message.reply_text("Choose the correct anime:", reply_markup=InlineKeyboardMarkup(rows))
+        return SEARCH
+    except Exception as e:
         log.exception("Search failed")
-        await message.edit_text(f"⚠️ Search failed: {error}")
+        await update.message.reply_text(f"TMDB search failed: {e}")
+        return ConversationHandler.END
 
 
-async def synopsis_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = " ".join(context.args).strip()
-    if not query:
-        await update.effective_message.reply_text(
-            "Usage: /synopsis <anime name>"
-        )
-        return
-
+async def picked(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
     try:
-        items = search(query)
-        if not items:
-            await update.effective_message.reply_text(
-                "No matching title found."
-            )
-            return
-
-        data = details(items[0])
-        message = f"📺 {data['title']}\n\n{data['overview'][:900]}"
-        if data["year"]:
-            message += f"\n\n📅 Year: {data['year']}"
-        if data["rating"]:
-            message += f"\n⭐ TMDB rating: {float(data['rating']):.1f}/10"
-        if data["genres"]:
-            message += "\n🎭 Genres: " + ", ".join(data["genres"])
-        message += (
-            f"\n\n🎞 {DEFAULT_QUALITY}\n"
-            f"🔊 {DEFAULT_AUDIO}\n"
-            f"✈️ {DEFAULT_JOIN}"
-        )
-        await update.effective_message.reply_text(message)
-    except Exception as error:
-        log.exception("Synopsis lookup failed")
-        await update.effective_message.reply_text(
-            f"⚠️ Could not retrieve synopsis: {error}"
-        )
+        idx=int(q.data.split(":")[1]); result=context.user_data["results"][idx]
+        kind=result["media_type"]
+        info=tmdb(f"/{kind}/{result['id']}", {"append_to_response":"credits"})
+        info["media_type"]=kind; info["name"]=info.get("name") or info.get("title")
+        info["genres"]=", ".join(g["name"] for g in info.get("genres",[])[:4]) or "ANIME"
+        info["status_label"]="ONGOING" if info.get("status")=="Returning Series" else (info.get("status") or "AVAILABLE").upper()
+        context.user_data["info"]=info
+        paths=get_images(info)
+        context.user_data["image_paths"]=[p for p in paths if p]
+        rows=[]
+        for i,p in enumerate(context.user_data["image_paths"]):
+            rows.append([InlineKeyboardButton(f"Use TMDB image {i+1}", callback_data=f"img:{i}")])
+        rows.append([InlineKeyboardButton("📤 Upload my own image", callback_data="img:upload")])
+        await q.edit_message_text("Choose the main poster/background image, or upload your own photo:", reply_markup=InlineKeyboardMarkup(rows))
+        return IMAGE
+    except Exception as e:
+        log.exception("Title selection failed")
+        await q.edit_message_text(f"Could not load title details: {e}")
+        return ConversationHandler.END
 
 
-async def poster_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """After choosing an anime, ask which poster design to use."""
-    query = update.callback_query
-    await query.answer()
-    index = query.data.split(":", 1)[1]
-    item = context.user_data.get("results", {}).get(index)
-    if not item:
-        await query.edit_message_text("Search expired. Please run /p again.")
-        return
-
-    buttons = [
-        [InlineKeyboardButton(TEMPLATES[key]["label"], callback_data=f"template:{index}:{key}")]
-        for key in TEMPLATES
-    ]
-    await query.edit_message_text(
-        f"🎨 Selected: {item['title']}\n\nChoose a poster template:",
-        reply_markup=InlineKeyboardMarkup(buttons),
-    )
-
-
-async def template_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    _, index, template = query.data.split(":", 2)
-    item = context.user_data.get("results", {}).get(index)
-    if not item:
-        await query.edit_message_text("Search expired. Please run /p again.")
-        return
-
-    await query.edit_message_text(
-        f"🎨 Creating {TEMPLATES.get(template, TEMPLATES['cinematic'])['label']} poster for {item['title']}…"
-    )
+async def image_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    choice=q.data.split(":",1)[1]
+    if choice == "upload":
+        context.user_data["awaiting_upload"]=True
+        await q.edit_message_text("Now send the image as a photo or image document. I’ll use it as the main background.")
+        return IMAGE
     try:
-        data = details(item)
-        image = make_poster(data, template=template)
-
-        
-        # ─── ANIME CAPTION ───
-        def get_value(key, default):
-            value = data.get(key)
-            return html.escape(str(value).strip()) if value else default
-
-        title = get_value("title", "Unknown Anime")
-        japanese = get_value("japanese", "Not Available")
-        season = get_value("season", "Unknown")
-        episode = get_value("episode", "TBA")
-        audio = get_value("audio", DEFAULT_AUDIO)
-        quality = get_value("quality", DEFAULT_QUALITY)
-        status = get_value("status", "Unknown")
-        year = get_value("year", "TBA")
-        studio = get_value("studio", "TBA")
-        genres = get_value("genres", "Not Available")
-        source = get_value("source", "Unknown")
-
-        synopsis = re.sub(
-            r"\s+", " ", data.get("overview", "")
-        ).strip()
-
-        if not synopsis:
-            synopsis = "Synopsis Not Available."
-
-        anime_name = title
-
-        # Metadata outside expandable blockquote
-        metadata = (
-            f"🎌 <b><b>Title :</b> {title}\n"
-            f"〄 <b>Season :</b> {season}\n"
-            f"〄 <b>Episode :</b> {episode}\n"
-            f"〄 <b>Audio :</b> {audio}\n"
-            f"〄 <b>Quality :</b> {quality}\n"
-            f"〄 <b>Status :</b> {status}\n"
-            f"〄 <b>Release Year :</b> {year}\n"
-            f"〄 <b>Genres :</b> {genres}\n"
-            f"〄 <b>Source :</b> {source}\n\n"
-            f"➽ <b>Nᴇᴛᴡᴏʀᴋ :-</b> "
-            f"@AnimeNetworkTamil ✓</b>\n\n"
-        )
-
-        # Expandable synopsis
-        opening = (
-            f"<blockquote expandable>"
-            f"📖 <b>Synopsis of {anime_name}</b>\n"
-        )
-        closing = "</blockquote>"
-
-        available = 1024 - len(metadata) - len(opening) - len(closing)
-
-        # Keep Telegram photo caption within 1024 characters
-        escaped_synopsis = html.escape(synopsis)
-
-        if len(escaped_synopsis) > available:
-            synopsis = synopsis[:max(0, available - 10)].rsplit(" ", 1)[0] + "…"
-
-        caption = (
-            metadata
-            + opening
-            + html.escape(synopsis)
-            + closing
-        )
+        path=context.user_data["image_paths"][int(choice)]
+        hero=fetch_image(path)
+        if hero is None: raise RuntimeError("That TMDB image could not be downloaded.")
+        context.user_data["hero"]=hero
+        context.user_data["thumb_paths"]=[p for p in context.user_data["image_paths"] if p != path][:4]
+        await q.edit_message_text("Choose a poster template:", reply_markup=template_keyboard())
+        return SEASON
+    except Exception as e:
+        await q.edit_message_text(str(e)); return ConversationHandler.END
 
 
-        await context.bot.send_photo(
-            chat_id=query.message.chat_id,
-            photo=image,
-            caption=caption,
-            parse_mode=ParseMode.HTML,
-            reply_markup=poster_keyboard(),
-        )
-        await query.message.reply_text(
-            "✅ Poster Ready Aiduchu"
-        )
-    except Exception as error:
-        log.exception("Poster creation failed")
-        await query.message.reply_text(f"⚠️ Couldn't create poster: {error}")
+async def image_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_upload"):
+        await update.message.reply_text("Use the image-selection buttons first, or start again with /p.")
+        return IMAGE
+    try:
+        obj=update.message.photo[-1] if update.message.photo else update.message.document
+        if not obj or (update.message.document and not (update.message.document.mime_type or "").startswith("image/")):
+            await update.message.reply_text("Please send a valid image."); return IMAGE
+        f=await context.bot.get_file(obj.file_id)
+        b=io.BytesIO(); await f.download_to_memory(out=b); b.seek(0)
+        context.user_data["hero"]=Image.open(b).convert("RGB")
+        context.user_data["thumb_paths"]=context.user_data.get("image_paths",[])[:4]
+        context.user_data["awaiting_upload"]=False
+        await update.message.reply_text("Choose a poster template:", reply_markup=template_keyboard())
+        return SEASON
+    except Exception as e:
+        log.exception("Upload failed")
+        await update.message.reply_text(f"Could not read that image: {e}"); return IMAGE
 
 
-async def text_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.effective_message.reply_text(
-        "Use /poster followed by an anime name.\n"
-        "Example: /poster Naruto Shippuden"
-    )
+async def template_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q=update.callback_query; await q.answer()
+    key=q.data.split(":",1)[1]
+    context.user_data["template"]=key
+    await q.edit_message_text(f"Template: {TEMPLATES.get(key,key)}\n\nEnter the season number (example: 18). Send 0 for a movie or no season.")
+    return SEASON
+
+
+async def season_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    value=update.message.text.strip()
+    if not value.isdigit() or int(value)>999:
+        await update.message.reply_text("Please enter a number, for example 18. Use 0 for a movie.")
+        return SEASON
+    context.user_data["season"]=value
+    await update.message.reply_text("Enter the episode range (example: 373 - 393). For a movie, send `Movie`.", parse_mode=ParseMode.MARKDOWN)
+    return EPISODES
+
+
+async def episodes_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    episodes=update.message.text.strip()[:40]
+    if not episodes:
+        await update.message.reply_text("Please enter an episode range or Movie."); return EPISODES
+    ud=context.user_data; info=ud["info"]
+    await update.message.reply_text("Creating your poster…")
+    try:
+        thumbs=[]
+        for p in ud.get("thumb_paths",[])[:4]:
+            im=fetch_image(p,"w500")
+            if im: thumbs.append(im)
+        poster_img=make_poster(info,ud["hero"],thumbs,ud.get("template","neon_info"),ud.get("season","1"),episodes)
+        name=info.get("name","Anime")
+        season=int(ud.get("season","1"))
+        season_line=f"Season {season}" if season else "Movie"
+        year=(info.get("first_air_date") or info.get("release_date") or "")[:4]
+        genres=info.get("genres","Anime")
+        overview=info.get("overview") or "Synopsis not available."
+        caption=(f"<b>🎌 {name}</b>\n"
+                 f"<b>〄 Season :</b> {season_line}\n"
+                 f"<b>〄 Episode :</b> {episodes}\n"
+                 f"<b>〄 Audio :</b> Tamil\n"
+                 f"<b>〄 Quality :</b> 480P | 720P | 1080P\n"
+                 f"<b>〄 Status :</b> {info.get('status_label','AVAILABLE')}\n"
+                 f"<b>〄 Year :</b> {year or 'N/A'}\n"
+                 f"<b>〄 Genre :</b> {genres}\n\n"
+                 f"<blockquote expandable><b>Synopsis :</b> {overview}</blockquote>")
+        await update.message.reply_photo(photo=poster_img, caption=caption, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        log.exception("Poster generation failed")
+        await update.message.reply_text(f"Poster generation failed: {e}")
+    finally:
+        for k in ("info","hero","thumb_paths","image_paths","template","season","results","awaiting_upload"):
+            ud.pop(k,None)
+    return ConversationHandler.END
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text("Cancelled. Start again with /p Anime Name.")
+    return ConversationHandler.END
 
 
 def main():
-    if not BOT_TOKEN:
-        raise SystemExit("Missing TELEGRAM_BOT_TOKEN in Render Environment.")
-    if not TMDB_TOKEN and not TMDB_KEY:
-        raise SystemExit(
-            "Missing TMDB_READ_ACCESS_TOKEN or TMDB_API_KEY in Render Environment."
-        )
-
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("p", search_cmd))
-    app.add_handler(CommandHandler("search", search_cmd))
-    app.add_handler(CommandHandler("synopsis", synopsis_cmd))
-    app.add_handler(
-        CallbackQueryHandler(poster_callback, pattern=r"^poster:\d+$")
+    if not TOKEN:
+        raise SystemExit("Missing TELEGRAM_BOT_TOKEN environment variable.")
+    app=Application.builder().token(TOKEN).build()
+    conv=ConversationHandler(
+        entry_points=[CommandHandler("p",poster)],
+        states={
+            SEARCH:[CallbackQueryHandler(picked,pattern=r"^pick:\d+$")],
+            IMAGE:[CallbackQueryHandler(image_chosen,pattern=r"^img:"), MessageHandler(filters.PHOTO | filters.Document.IMAGE,image_upload)],
+            SEASON:[CallbackQueryHandler(template_chosen,pattern=r"^tpl:"), MessageHandler(filters.TEXT & ~filters.COMMAND,season_entered)],
+            EPISODES:[MessageHandler(filters.TEXT & ~filters.COMMAND,episodes_entered)],
+        },
+        fallbacks=[CommandHandler("cancel",cancel),CommandHandler("start",start)],
+        allow_reentry=True,
     )
-    app.add_handler(
-        CallbackQueryHandler(template_callback, pattern=r"^template:\d+:[a-z]+$")
-    )
-    app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, text_fallback)
-    )
-
-    log.info("AnimeNetworkTamil Poster Bot started")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
+    app.add_handler(CommandHandler("start",start))
+    app.add_handler(CommandHandler("help",start))
+    app.add_handler(conv)
+    log.info("Anime Poster Bot started")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    threading.Thread(target=run_web_server, daemon=True).start()
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
     main()
