@@ -1,4 +1,4 @@
-"""Anime Poster Bot — landscape neon-info poster inspired by the user's reference.
+"""Anime Poster Bot — single fixed Neon Cinematic landscape poster.
 
 Environment variables:
   TELEGRAM_BOT_TOKEN (required)
@@ -47,17 +47,7 @@ TMDB_API = "https://api.themoviedb.org/3"
 IMG = "https://image.tmdb.org/t/p/"
 
 SEARCH, IMAGE, SEASON, EPISODES = range(4)
-TEMPLATES = {
-    "neon_info": "Neon Info (Reference)",
-    "cinematic": "Cinematic",
-    "broadcast": "Broadcast",
-    "magazine": "Magazine",
-    "minimal": "Minimal",
-    "retro": "Retro",
-    "purple": "Purple Night",
-    "mono": "Monochrome",
-    "editorial": "Editorial",
-}
+POSTER_STYLE = "NEON CINEMATIC"
 
 
 def tmdb(path: str, params=None):
@@ -138,85 +128,99 @@ def wrap_lines(draw, text, fnt, max_width, max_lines=8):
     return lines
 
 
-def make_poster(info: dict, hero: Image.Image, thumbs: list, template="neon_info", season="1", episodes="1 - 12") -> io.BytesIO:
+def make_poster(info: dict, hero: Image.Image, thumbs: list,
+               season="1", episodes="1 - 12") -> io.BytesIO:
+    """Render the bot's single fixed Neon Cinematic poster."""
     W, H = 1920, 1080
-    base = cover(hero, (W, H))
-    base = ImageEnhance.Color(base).enhance(1.25).filter(ImageFilter.GaussianBlur(1.2))
-    # Darken background while retaining the selected anime image.
-    shade = Image.new("RGBA", (W, H), (0, 8, 7, 105 if template != "minimal" else 145))
-    base = Image.alpha_composite(base.convert("RGBA"), shade)
-    # Left-to-right shadow helps information remain readable.
-    grad = Image.new("RGBA", (W, H)); gd = ImageDraw.Draw(grad)
+    base = cover(hero, (W, H)).convert("RGBA")
+    base = ImageEnhance.Color(base.convert("RGB")).enhance(1.35).convert("RGBA")
+    base = base.filter(ImageFilter.GaussianBlur(1.0))
+
+    shade = Image.new("RGBA", (W, H), (5, 7, 24, 125))
+    base = Image.alpha_composite(base, shade)
+    grad = Image.new("RGBA", (W, H))
+    gd = ImageDraw.Draw(grad)
     for x in range(W):
-        a = int(185 * (1 - x/W) ** 1.35)
-        gd.line((x, 0, x, H), fill=(0, 0, 0, a))
+        alpha = int(220 * (1 - x / W) ** 1.25)
+        gd.line((x, 0, x, H), fill=(4, 7, 24, alpha))
     base = Image.alpha_composite(base, grad)
+
     d = ImageDraw.Draw(base)
-    accent = (55, 255, 150, 255) if template in ("neon_info", "broadcast") else (255, 190, 50, 255)
-    panel = (0, 0, 0, 205)
-    # Header title area
+    cyan = (65, 225, 255, 255)
+    purple = (168, 95, 255, 255)
+    white = (248, 250, 255, 255)
+    gold = (255, 211, 95, 255)
+    panel = (7, 10, 29, 218)
+
+    d.rounded_rectangle((18, 18, W-18, H-18), radius=26,
+                        outline=(95, 105, 255, 230), width=4)
+    d.line((42, 190, 1110, 190), fill=cyan, width=4)
+
     title = (info.get("name") or "ANIME").upper()
-    title_font = fit_text(d, title, 790, 105, 45, True)
-    d.text((48, 34), title, font=title_font, fill=(255, 255, 255, 255), stroke_width=5, stroke_fill=(0, 0, 0, 230))
-    subtitle = "ANIME SERIES" if info.get("media_type") == "tv" else "ANIME MOVIE"
-    d.text((58, 150), subtitle, font=font(28, True), fill=accent, stroke_width=1, stroke_fill=(0,0,0,255))
+    title_font = fit_text(d, title, 1080, 104, 48, True)
+    d.text((48, 38), title, font=title_font, fill=white,
+           stroke_width=5, stroke_fill=(0, 0, 0, 230))
 
-    # Info tiles, matching the reference layout.
-    left, top, gap = 30, 218, 16
+    media_label = "ANIME SERIES" if info.get("media_type") == "tv" else "ANIME MOVIE"
+    year = (info.get("first_air_date") or info.get("release_date") or "")[:4]
+    d.text((58, 150), f"{media_label}  |  {year or 'YEAR N/A'}",
+           font=font(28, True), fill=cyan)
+
+    season_label = f"SEASON {season}" if str(season) != "0" else "MOVIE"
+    rating = info.get("vote_average")
+    rating_text = f"{float(rating):.1f}/10" if rating not in (None, "", 0) else "NOT RATED"
     tiles = [
-        ("STATUS", info.get("status_label", "AVAILABLE"), "▶"),
-        ("SEASON", f"Season {season}", "▰"),
-        ("AUDIO", info.get("audio", "TAMIL"), "♫"),
-        ("QUALITY", info.get("quality", "480P | 720P | 1080P"), "HD"),
-        ("GENRE", info.get("genres", "ANIME"), "✦"),
-        ("SOURCE", info.get("source", "ANIMENETWORKTAMIL"), "◉"),
+        ("STATUS", info.get("status_label", "AVAILABLE")),
+        ("SEASON", season_label),
+        ("AUDIO", info.get("audio", "TAMIL")),
+        ("QUALITY", info.get("quality", "480P | 720P | 1080P")),
+        ("GENRE", info.get("genres", "ANIME")),
+        ("RATING", rating_text),
     ]
-    widths = [320, 340, 320, 480, 440, 350]
-    positions = [(left,top),(left+336,top),(left,top+96),(left+336,top+96),(left,top+192),(left+456,top+192)]
-    for (label, value, symbol), (x,y), ww in zip(tiles, positions, widths):
-        d.rounded_rectangle((x,y,x+ww,y+82), radius=12, fill=panel, outline=accent, width=3)
-        d.text((x+16,y+9), symbol, font=font(34, True), fill=accent)
-        d.text((x+66,y+8), label, font=font(19, True), fill=(245,245,245,255))
-        vf = fit_text(d, str(value), ww-82, 29, 17, True)
-        d.text((x+66,y+36), str(value), font=vf, fill=(255, 211, 55, 255))
+    tile_x, tile_y, tile_w, tile_h = [30, 342, 654], [220, 322], 292, 84
+    for index, (label, value) in enumerate(tiles):
+        x, y = tile_x[index % 3], tile_y[index // 3]
+        edge = cyan if index % 2 == 0 else purple
+        d.rounded_rectangle((x, y, x+tile_w, y+tile_h), radius=14,
+                            fill=panel, outline=edge, width=3)
+        d.text((x+16, y+10), label, font=font(18, True), fill=edge)
+        value_font = fit_text(d, str(value), tile_w-32, 29, 17, True)
+        d.text((x+16, y+39), str(value), font=value_font, fill=gold)
 
-    # Synopsis card at lower left.
-    sx, sy, sw, sh = 30, 506, 440, 520
-    d.rounded_rectangle((sx,sy,sx+sw,sy+sh), radius=14, fill=panel, outline=accent, width=3)
-    d.text((sx+22,sy+18), "▣  SYNOPSIS", font=font(31, True), fill=(255, 210, 45, 255))
-    synopsis = info.get("overview") or "Synopsis not available."
-    sf = font(24, False)
-    for i, line in enumerate(wrap_lines(d, synopsis, sf, sw-44, 15)):
-        d.text((sx+22, sy+72+i*29), line, font=sf, fill=(245,245,245,255))
+    sx, sy, sw, sh = 30, 430, 430, 574
+    d.rounded_rectangle((sx, sy, sx+sw, sy+sh), radius=18,
+                        fill=panel, outline=purple, width=3)
+    d.text((sx+22, sy+20), "SYNOPSIS", font=font(31, True), fill=cyan)
+    synopsis_font = font(23, False)
+    for i, line in enumerate(wrap_lines(
+            d, info.get("overview") or "Synopsis not available.",
+            synopsis_font, sw-44, 17)):
+        d.text((sx+22, sy+76+i*29), line, font=synopsis_font, fill=white)
 
-    # Four scene previews across the lower middle/right.
-    thumb_x, thumb_y, tw, th, tg = 490, 688, 340, 200, 16
-    for i in range(4):
-        im = thumbs[i] if i < len(thumbs) else None
-        tile = cover(im, (tw,th), (12,35,27))
-        x = thumb_x + i*(tw+tg)
-        base.alpha_composite(tile.convert("RGBA"), (x,thumb_y))
+    preview_x, preview_y = 490, 690
+    preview_w, preview_h, gap = 340, 200, 18
+    for i, im in enumerate(thumbs[:4]):
+        x = preview_x + i * (preview_w + gap)
+        tile = cover(im, (preview_w, preview_h)).convert("RGBA")
+        base.alpha_composite(tile, (x, preview_y))
         d = ImageDraw.Draw(base)
-        d.rounded_rectangle((x,thumb_y,x+tw,thumb_y+th), radius=12, outline=accent, width=4)
+        edge = cyan if i % 2 == 0 else purple
+        d.rounded_rectangle((x, preview_y, x+preview_w, preview_y+preview_h),
+                            radius=14, outline=edge, width=4)
 
-    # Episode strip
-    ex, ey = 500, 914
-    d.rounded_rectangle((ex,ey,ex+1410,ey+94), radius=14, fill=(0,0,0,205), outline=accent, width=3)
-    d.text((ex+40,ey+13), "EPISODE :", font=font(46, True), fill=(255,255,255,255))
-    d.text((ex+345,ey+13), str(episodes), font=font(48, True), fill=(255,215,45,255))
-    d.text((ex+1040,ey+17), info.get("status_label", "ONGOING").upper(), font=font(38, True), fill=accent)
+    ex, ey = 490, 920
+    d.rounded_rectangle((ex, ey, 1880, ey+78), radius=15,
+                        fill=panel, outline=cyan, width=3)
+    d.text((ex+28, ey+13), "EPISODES", font=font(38, True), fill=white)
+    episode_font = fit_text(d, str(episodes), 700, 42, 24, True)
+    d.text((ex+270, ey+14), str(episodes), font=episode_font, fill=gold)
+    d.text((1430, ey+20), "ANIMENETWORKTAMIL",
+           font=font(25, True), fill=cyan)
 
-    # Footer/channel tag
-    footer = CHANNEL if CHANNEL else "ANIME NETWORK TAMIL"
-    d.text((W-520,H-48), footer, font=font(22,True), fill=(255,255,255,220), stroke_width=2, stroke_fill=(0,0,0,220))
-    out = io.BytesIO(); base.convert("RGB").save(out, "JPEG", quality=93, optimize=True); out.seek(0)
+    out = io.BytesIO()
+    base.convert("RGB").save(out, "JPEG", quality=94, optimize=True)
+    out.seek(0)
     return out
-
-
-def template_keyboard():
-    keys = list(TEMPLATES.items())
-    rows = [[InlineKeyboardButton(label, callback_data=f"tpl:{key}")] for key,label in keys]
-    return InlineKeyboardMarkup(rows)
 
 
 def get_images(info):
@@ -233,7 +237,7 @@ def get_images(info):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🎨 *Anime Poster Bot*\n\nUse `/p Naruto Shippuden` to create a poster.\nYou can choose a TMDB image or upload your own, select a template, and enter the season and episode range manually.",
+        "🎨 *Anime Poster Bot*\n\nUse `/p Naruto Shippuden` to create a Neon Cinematic poster.\nChoose a TMDB image or upload your own, then enter the season and episode range.",
         parse_mode=ParseMode.MARKDOWN)
 
 
@@ -299,7 +303,7 @@ async def image_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if hero is None: raise RuntimeError("That TMDB image could not be downloaded.")
         context.user_data["hero"]=hero
         context.user_data["thumb_paths"]=[p for p in context.user_data["image_paths"] if p != path][:4]
-        await q.edit_message_text("Choose a poster template:", reply_markup=template_keyboard())
+        await q.edit_message_text("Neon Cinematic style selected automatically.\n\nEnter the season number (example: 18). Send 0 for a movie or no season.")
         return SEASON
     except Exception as e:
         await q.edit_message_text(str(e)); return ConversationHandler.END
@@ -318,19 +322,11 @@ async def image_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["hero"]=Image.open(b).convert("RGB")
         context.user_data["thumb_paths"]=context.user_data.get("image_paths",[])[:4]
         context.user_data["awaiting_upload"]=False
-        await update.message.reply_text("Choose a poster template:", reply_markup=template_keyboard())
+        await update.message.reply_text("Neon Cinematic style selected automatically.\n\nEnter the season number (example: 18). Send 0 for a movie or no season.")
         return SEASON
     except Exception as e:
         log.exception("Upload failed")
         await update.message.reply_text(f"Could not read that image: {e}"); return IMAGE
-
-
-async def template_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q=update.callback_query; await q.answer()
-    key=q.data.split(":",1)[1]
-    context.user_data["template"]=key
-    await q.edit_message_text(f"Template: {TEMPLATES.get(key,key)}\n\nEnter the season number (example: 18). Send 0 for a movie or no season.")
-    return SEASON
 
 
 async def season_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -354,15 +350,15 @@ async def episodes_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for p in ud.get("thumb_paths",[])[:4]:
             im=fetch_image(p,"w500")
             if im: thumbs.append(im)
-        poster_img=make_poster(info,ud["hero"],thumbs,ud.get("template","neon_info"),ud.get("season","1"),episodes)
+        poster_img=make_poster(info, ud["hero"], thumbs, ud.get("season", "1"), episodes)
         name=info.get("name","Anime")
         season=int(ud.get("season","1"))
         season_line=f"Season {season}" if season else "Movie"
         year=(info.get("first_air_date") or info.get("release_date") or "")[:4]
         genres=info.get("genres","Anime")
         overview=info.get("overview") or "Synopsis not available."
-        caption=(f"<b>🎌 {name}</b>\n"
-                 f"<b><b>〄 Season :</b> {season_line}\n"
+        caption=(f"<b><b>🎌 {name}</b>\n"
+                 f"<b>〄 Season :</b> {season_line}\n"
                  f"<b>〄 Episode :</b> {episodes}\n"
                  f"<b>〄 Audio :</b> Tamil\n"
                  f"<b>〄 Quality :</b> 480P | 720P | 1080P\n"
@@ -375,7 +371,7 @@ async def episodes_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log.exception("Poster generation failed")
         await update.message.reply_text(f"Poster generation failed: {e}")
     finally:
-        for k in ("info","hero","thumb_paths","image_paths","template","season","results","awaiting_upload"):
+        for k in ("info","hero","thumb_paths","image_paths","season","results","awaiting_upload"):
             ud.pop(k,None)
     return ConversationHandler.END
 
@@ -395,7 +391,7 @@ def main():
         states={
             SEARCH:[CallbackQueryHandler(picked,pattern=r"^pick:\d+$")],
             IMAGE:[CallbackQueryHandler(image_chosen,pattern=r"^img:"), MessageHandler(filters.PHOTO | filters.Document.IMAGE,image_upload)],
-            SEASON:[CallbackQueryHandler(template_chosen,pattern=r"^tpl:"), MessageHandler(filters.TEXT & ~filters.COMMAND,season_entered)],
+            SEASON:[MessageHandler(filters.TEXT & ~filters.COMMAND,season_entered)],
             EPISODES:[MessageHandler(filters.TEXT & ~filters.COMMAND,episodes_entered)],
         },
         fallbacks=[CommandHandler("cancel",cancel),CommandHandler("start",start)],
