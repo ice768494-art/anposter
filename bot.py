@@ -1,6 +1,18 @@
-import os, io, logging, asyncio, textwrap
+"""Anime Poster Bot — landscape neon-info poster inspired by the user's reference.
+
+Environment variables:
+  TELEGRAM_BOT_TOKEN (required)
+  TMDB_READ_ACCESS_TOKEN (recommended) or TMDB_API_KEY
+  CHANNEL_USERNAME (optional, e.g. @AnimeNetworkTamil)
+  DEVELOPER_USERNAME (optional)
+
+Install: pip install -r requirements.txt
+Run: python bot.py
+"""
+import os, io, logging, asyncio, textwrap, threading
 from typing import Optional
 import requests
+from flask import Flask, jsonify
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
@@ -9,6 +21,24 @@ from telegram.ext import (Application, CommandHandler, MessageHandler, CallbackQ
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("anime-poster-bot")
+web = Flask(__name__)
+
+@web.get("/")
+def health_check():
+    return jsonify({"status": "ok", "service": "anime-poster-bot"}), 200
+
+@web.get("/health")
+def health():
+    return jsonify({"status": "healthy"}), 200
+
+def start_health_server():
+    port = int(os.environ.get("PORT", "10000"))
+    threading.Thread(
+        target=lambda: web.run(host="0.0.0.0", port=port, threaded=True, use_reloader=False),
+        name="render-health-server",
+        daemon=True,
+    ).start()
+    log.info("Health server listening on 0.0.0.0:%s", port)
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TMDB_TOKEN = os.getenv("TMDB_READ_ACCESS_TOKEN", "").strip()
 TMDB_KEY = os.getenv("TMDB_API_KEY", "").strip()
@@ -332,13 +362,13 @@ async def episodes_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
         genres=info.get("genres","Anime")
         overview=info.get("overview") or "Synopsis not available."
         caption=(f"<b>🎌 {name}</b>\n"
-                 f"<b>〄 Season :</b> {season_line}\n"
+                 f"<b><b>〄 Season :</b> {season_line}\n"
                  f"<b>〄 Episode :</b> {episodes}\n"
                  f"<b>〄 Audio :</b> Tamil\n"
                  f"<b>〄 Quality :</b> 480P | 720P | 1080P\n"
                  f"<b>〄 Status :</b> {info.get('status_label','AVAILABLE')}\n"
                  f"<b>〄 Year :</b> {year or 'N/A'}\n"
-                 f"<b>〄 Genre :</b> {genres}\n\n"
+                 f"<b>〄 Genre :</b> {genres}</b>\n\n"
                  f"<blockquote expandable><b>Synopsis :</b> {overview}</blockquote>")
         await update.message.reply_photo(photo=poster_img, caption=caption, parse_mode=ParseMode.HTML)
     except Exception as e:
@@ -374,6 +404,7 @@ def main():
     app.add_handler(CommandHandler("start",start))
     app.add_handler(CommandHandler("help",start))
     app.add_handler(conv)
+    start_health_server()
     log.info("Anime Poster Bot started")
     # Python 3.14 no longer creates a default event loop automatically.
     # python-telegram-bot 21.x run_polling() expects one to exist.
