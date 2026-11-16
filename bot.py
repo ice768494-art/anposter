@@ -132,16 +132,23 @@ def make_poster(info: dict, hero: Image.Image, thumbs: list,
                season="1", episodes="1 - 12") -> io.BytesIO:
     """Render the bot's single fixed Neon Cinematic poster."""
     W, H = 1920, 1080
-    base = cover(hero, (W, H)).convert("RGBA")
-    base = ImageEnhance.Color(base.convert("RGB")).enhance(1.35).convert("RGBA")
-    base = base.filter(ImageFilter.GaussianBlur(1.0))
+    # Keep the selected anime artwork bright, sharp and colourful.
+    # Use only a light overall tint, then a stronger left-side gradient
+    # behind the text so the right side of the artwork stays visible.
+    base = cover(hero, (W, H)).convert("RGB")
+    base = ImageEnhance.Color(base).enhance(1.48)
+    base = ImageEnhance.Contrast(base).enhance(1.10)
+    base = ImageEnhance.Brightness(base).enhance(1.08)
+    base = base.convert("RGBA")
 
-    shade = Image.new("RGBA", (W, H), (5, 7, 24, 125))
-    base = Image.alpha_composite(base, shade)
+    light_shade = Image.new("RGBA", (W, H), (5, 7, 24, 38))
+    base = Image.alpha_composite(base, light_shade)
     grad = Image.new("RGBA", (W, H))
     gd = ImageDraw.Draw(grad)
     for x in range(W):
-        alpha = int(220 * (1 - x / W) ** 1.25)
+        # Fade the text-protection gradient before the centre so the
+        # main character/artwork on the right remains vivid.
+        alpha = int(178 * (1 - min(x / 1180, 1)) ** 1.35)
         gd.line((x, 0, x, H), fill=(4, 7, 24, alpha))
     base = Image.alpha_composite(base, grad)
 
