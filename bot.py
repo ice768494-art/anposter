@@ -136,19 +136,17 @@ def make_poster(info: dict, hero: Image.Image, thumbs: list,
     # Use only a light overall tint, then a stronger left-side gradient
     # behind the text so the right side of the artwork stays visible.
     base = cover(hero, (W, H)).convert("RGB")
-    base = ImageEnhance.Color(base).enhance(1.48)
-    base = ImageEnhance.Contrast(base).enhance(1.10)
-    base = ImageEnhance.Brightness(base).enhance(1.08)
+    base = ImageEnhance.Color(base).enhance(1.55)
+    base = ImageEnhance.Contrast(base).enhance(1.12)
+    base = ImageEnhance.Brightness(base).enhance(1.16)
     base = base.convert("RGBA")
 
-    light_shade = Image.new("RGBA", (W, H), (5, 7, 24, 38))
-    base = Image.alpha_composite(base, light_shade)
+    # No global dark veil: keep the selected artwork bright and crisp.
+    # A gentle gradient is limited to the far-left text area only.
     grad = Image.new("RGBA", (W, H))
     gd = ImageDraw.Draw(grad)
     for x in range(W):
-        # Fade the text-protection gradient before the centre so the
-        # main character/artwork on the right remains vivid.
-        alpha = int(178 * (1 - min(x / 1180, 1)) ** 1.35)
+        alpha = int(112 * (1 - min(x / 650, 1)) ** 1.45)
         gd.line((x, 0, x, H), fill=(4, 7, 24, alpha))
     base = Image.alpha_composite(base, grad)
 
@@ -173,28 +171,10 @@ def make_poster(info: dict, hero: Image.Image, thumbs: list,
     d.text((58, 150), f"{media_label}  |  {year or 'YEAR N/A'}",
            font=font(28, True), fill=cyan)
 
-    season_label = f"SEASON {season}" if str(season) != "0" else "MOVIE"
-    rating = info.get("vote_average")
-    rating_text = f"{float(rating):.1f}/10" if rating not in (None, "", 0) else "NOT RATED"
-    tiles = [
-        ("STATUS", info.get("status_label", "AVAILABLE")),
-        ("SEASON", season_label),
-        ("AUDIO", info.get("audio", "TAMIL")),
-        ("QUALITY", info.get("quality", "480P | 720P | 1080P")),
-        ("GENRE", info.get("genres", "ANIME")),
-        ("RATING", rating_text),
-    ]
-    tile_x, tile_y, tile_w, tile_h = [30, 342, 654], [220, 322], 292, 84
-    for index, (label, value) in enumerate(tiles):
-        x, y = tile_x[index % 3], tile_y[index // 3]
-        edge = cyan if index % 2 == 0 else purple
-        d.rounded_rectangle((x, y, x+tile_w, y+tile_h), radius=14,
-                            fill=panel, outline=edge, width=3)
-        d.text((x+16, y+10), label, font=font(18, True), fill=edge)
-        value_font = fit_text(d, str(value), tile_w-32, 29, 17, True)
-        d.text((x+16, y+39), str(value), font=value_font, fill=gold)
+    # The six metadata cards have been removed for a cleaner artwork-first poster.
+    # Season, audio, quality, status, genre and rating remain in the Telegram caption.
 
-    sx, sy, sw, sh = 30, 430, 430, 574
+    sx, sy, sw, sh = 30, 220, 430, 784
     d.rounded_rectangle((sx, sy, sx+sw, sy+sh), radius=18,
                         fill=panel, outline=purple, width=3)
     d.text((sx+22, sy+20), "SYNOPSIS", font=font(31, True), fill=cyan)
@@ -371,9 +351,8 @@ async def episodes_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  f"<b>〄 Quality :</b> 480P | 720P | 1080P\n"
                  f"<b>〄 Status :</b> {info.get('status_label','AVAILABLE')}\n"
                  f"<b>〄 Year :</b> {year or 'N/A'}\n"
-                 f"<b>〄 Genre :</b> {genres}</b>\n"
-                 f"<b>➽ Nᴇᴛᴡᴏʀᴋ :- @AnimeNetworkTamil ✓</b>\n\n"
-                 f"<blockquote expandable><b>Synopsis : {overview}</b></blockquote>")
+                 f"<b>〄 Genre :</b> {genres}</b>\n\n"
+                 f"<blockquote expandable><b>Synopsis :</b><b> {overview}</b></blockquote>")
         await update.message.reply_photo(photo=poster_img, caption=caption, parse_mode=ParseMode.HTML)
     except Exception as e:
         log.exception("Poster generation failed")
