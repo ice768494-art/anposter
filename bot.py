@@ -57,7 +57,7 @@ TMDB_API = "https://api.themoviedb.org/3"
 IMG = "https://image.tmdb.org/t/p/"
 LOGO_PATH = os.path.join(BASE_DIR, "logo.png")
 
-SEARCH, IMAGE, SEASON, EPISODES = range(4)
+SEARCH, IMAGE, SEASON, EPISODES, SYNOPSIS = range(5)
 
 LANG_NAMES = {
     "ja": "JAPANESE", "ko": "KOREAN", "zh": "CHINESE", "en": "ENGLISH",
@@ -346,16 +346,24 @@ def make_poster(info: dict, hero: Image.Image, thumbs: list,
 
 
 def get_season_overview(info: dict, season_num: int) -> Optional[str]:
-    """Synopsis of one specific season from TMDB (None if unavailable)."""
+    """Synopsis of one specific season from TMDB (None if TMDB has none)."""
     if info.get("media_type") != "tv" or season_num <= 0:
         return None
     try:
-        data = tmdb(f"/tv/{info['id']}/season/{season_num}")
+        data = tmdb(f"/tv/{info['id']}/season/{season_num}", {"language": "en-US"})
         text = (data.get("overview") or "").strip()
-        return text or None
+        if text:
+            return text
     except Exception as e:
-        log.warning("Season %s overview unavailable: %s", season_num, e)
-        return None
+        log.warning("Season %s details failed: %s", season_num, e)
+    # fallback: the seasons list that came with the series details
+    for sea in info.get("seasons", []) or []:
+        if sea.get("season_number") == season_num:
+            text = (sea.get("overview") or "").strip()
+            if text:
+                return text
+    log.info("TMDB has no synopsis for %s season %s", info.get("name"), season_num)
+    return None
 
 
 # ───────────────────────── Bot handlers ─────────────────────────
@@ -487,30 +495,26 @@ async def season_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return EPISODES
 
 
-async def episodes_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    episodes = update.message.text.strip()[:40]
-    if not episodes:
-        await update.message.reply_text("Please enter an episode range or Movie.")
-        return EPISODES
+async def send_poster(update: Update, context: ContextTypes.DEFAULT_TYPE, overview: str):
     ud = context.user_data
     info = ud["info"]
+    episodes = ud.get("episodes", "")
     await update.message.reply_text("Creating your poster…")
     try:
         thumbs = []  # not used by the new template, kept for compatibility
         poster_img = make_poster(info, ud["hero"], thumbs, ud.get("season", "1"), episodes)
-        name = info.get("name", "Anime")
+        name = html.escape(str(info.get("name", "Anime")))
         season = int(ud.get("season", "1"))
         season_line = f"Season {season}" if season else "Movie"
         year = (info.get("first_air_date") or info.get("release_date") or "")[:4]
-        genres = info.get("genres", "Anime")
-        # Season-specific synopsis (e.g. season 02); falls back to the series synopsis
-        overview = get_season_overview(info, season) or info.get("overview") or "Synopsis not available."
-        name = html.escape(str(name))
-        genres = html.escape(str(genres))
+        genres = html.escape(str(info.get("genres", "Anime")))
+        overview = (overview or "Synopsis not available.").strip()
+        if len(overview) > 600:  # Telegram captions are limited to 1024 chars
+            overview = overview[:600].rsplit(" ", 1)[0] + "…"
         overview = html.escape(overview)
         caption = (f"<b><b>🎌 {name}</b>\n"
                    f"<b>〄 Season :</b> {season_line}\n"
-                   f"<b>〄 Episode :</b> {episodes}\n"
+                   f"<b>〄 Episode :</b> {html.escape(episodes)}\n"
                    f"<b>〄 Audio :</b> Tamil\n"
                    f"<b>〄 Quality :</b> 480P | 720P | 1080P\n"
                    f"<b>〄 Status :</b> {info.get('status_label', 'AVAILABLE')}\n"
@@ -522,9 +526,43 @@ async def episodes_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
         log.exception("Poster generation failed")
         await update.message.reply_text(f"Poster generation failed: {e}")
     finally:
-        for k in ("info", "hero", "thumb_paths", "image_paths", "season", "results", "awaiting_upload"):
+        for k in ("info", "hero", "thumb_paths", "image_paths", "season", "episodes", "results", "awaiting_upload"):
             ud.pop(k, None)
     return ConversationHandler.END
+
+
+async def episodes_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    episodes = update.message.text.strip()[:40]
+    if not episodes:
+        await update.message.reply_text("Please enter an episode range or Movie.")
+        return EPISODES
+    ud = context.user_data
+    info = ud["info"]
+    ud["episodes"] = episodes
+    season = int(ud.get("season", "1"))
+    series_overview = info.get("overview") or "Synopsis not available."
+
+    if info.get("media_type") == "tv" and season > 0:
+        season_overview = get_season_overview(info, season)
+        if season_overview:
+            return await send_poster(update, context, season_overview)
+        # TMDB has nothing for this season -> let the user supply it
+        await update.message.reply_text(
+            f"TMDB has no synopsis for Season {season}.\n\n"
+            "Send the Season synopsis text now, or send `skip` to use the series synopsis.",
+            parse_mode=ParseMode.MARKDOWN)
+        return SYNOPSIS
+    return await send_poster(update, context, series_overview)
+
+
+async def synopsis_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if not text:
+        await update.message.reply_text("Send the synopsis text, or `skip`.", parse_mode=ParseMode.MARKDOWN)
+        return SYNOPSIS
+    if text.lower() == "skip":
+        text = context.user_data["info"].get("overview") or "Synopsis not available."
+    return await send_poster(update, context, text)
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -545,6 +583,7 @@ def main():
                     MessageHandler(filters.PHOTO | filters.Document.IMAGE, image_upload)],
             SEASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, season_entered)],
             EPISODES: [MessageHandler(filters.TEXT & ~filters.COMMAND, episodes_entered)],
+            SYNOPSIS: [MessageHandler(filters.TEXT & ~filters.COMMAND, synopsis_entered)],
         },
         fallbacks=[CommandHandler("cancel", cancel), CommandHandler("start", start)],
         allow_reentry=True,
