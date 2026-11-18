@@ -13,7 +13,7 @@ Optional files next to bot.py:
 Install: pip install -r requirements.txt
 Run: python bot.py
 """
-import os, io, math, logging, asyncio, threading
+import os, io, math, html, logging, asyncio, threading
 from typing import Optional
 import requests
 from flask import Flask, jsonify
@@ -315,9 +315,10 @@ def make_poster(info: dict, hero: Image.Image, thumbs: list,
     d.text((lcx - dia // 2 - 36, lcy), "Download Now", font=font(62, True),
            fill=WHITE, anchor="rm")
 
-    # logo (circle crop) or fallback arrow icon
-    ring = (lcx - dia // 2 - 8, lcy - dia // 2 - 8, lcx + dia // 2 + 8, lcy + dia // 2 + 8)
-    d.ellipse(ring, outline=(255, 255, 255, 200), width=4)
+    # square channel logo (rounded corners) or fallback arrow icon
+    # ring sits behind the logo, offset to the top-left like the template
+    rcx, rcy, rr = lcx - 62, lcy - 62, 86
+    d.ellipse((rcx - rr, rcy - rr, rcx + rr, rcy + rr), outline=(255, 255, 255, 215), width=4)
     base.alpha_composite(ov)
     ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(ov)
@@ -326,7 +327,7 @@ def make_poster(info: dict, hero: Image.Image, thumbs: list,
         try:
             logo = Image.open(LOGO_PATH).convert("RGBA").resize((dia, dia), Image.Resampling.LANCZOS)
             mask = Image.new("L", (dia, dia), 0)
-            ImageDraw.Draw(mask).ellipse((0, 0, dia - 1, dia - 1), fill=255)
+            ImageDraw.Draw(mask).rounded_rectangle((0, 0, dia - 1, dia - 1), radius=18, fill=255)
             bg = Image.new("RGBA", (dia, dia), (255, 255, 255, 255))
             bg.alpha_composite(logo)
             base.paste(bg, (lcx - dia // 2, lcy - dia // 2), mask)
@@ -342,6 +343,19 @@ def make_poster(info: dict, hero: Image.Image, thumbs: list,
     base.convert("RGB").save(out, "JPEG", quality=93, optimize=True)
     out.seek(0)
     return out
+
+
+def get_season_overview(info: dict, season_num: int) -> Optional[str]:
+    """Synopsis of one specific season from TMDB (None if unavailable)."""
+    if info.get("media_type") != "tv" or season_num <= 0:
+        return None
+    try:
+        data = tmdb(f"/tv/{info['id']}/season/{season_num}")
+        text = (data.get("overview") or "").strip()
+        return text or None
+    except Exception as e:
+        log.warning("Season %s overview unavailable: %s", season_num, e)
+        return None
 
 
 # ───────────────────────── Bot handlers ─────────────────────────
@@ -489,7 +503,11 @@ async def episodes_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
         season_line = f"Season {season}" if season else "Movie"
         year = (info.get("first_air_date") or info.get("release_date") or "")[:4]
         genres = info.get("genres", "Anime")
-        overview = info.get("overview") or "Synopsis not available."
+        # Season-specific synopsis (e.g. season 02); falls back to the series synopsis
+        overview = get_season_overview(info, season) or info.get("overview") or "Synopsis not available."
+        name = html.escape(str(name))
+        genres = html.escape(str(genres))
+        overview = html.escape(overview)
         caption = (f"<b><b>🎌 {name}</b>\n"
                    f"<b>〄 Season :</b> {season_line}\n"
                    f"<b>〄 Episode :</b> {episodes}\n"
