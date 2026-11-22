@@ -16,7 +16,7 @@ Optional files next to bot.py:
 Install: pip install -r requirements.txt
 Run: python bot.py
 """
-import os, io, math, html, logging, asyncio, threading
+import os, io, re, math, html, logging, asyncio, threading
 from typing import Optional
 import requests
 from flask import Flask, jsonify
@@ -548,6 +548,209 @@ def tpl_glass(info, hero, season, episodes):
     return base
 
 
+# ───────────────────────── Template 5: Diagonal Slash ─────────────────────────
+
+def tpl_slash(info, hero, season, episodes):
+    lang, rating_txt, season_txt, genres = info_bits(info, season)
+    base = prep_art(hero)
+    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(ov)
+    d.polygon([(0, 0), (1250, 0), (900, H), (0, H)], fill=(10, 10, 14, 238))
+    d.line([(1250, 0), (900, H)], fill=ROSE, width=10)
+    d.line([(1290, 0), (940, H)], fill=(255, 255, 255, 70), width=3)
+    base.alpha_composite(ov)
+
+    LM = 100
+    d0 = ImageDraw.Draw(base)
+    tf, lines = fit_title(d0, (info.get("name") or "ANIME").upper(), 880, 3, 120, 50)
+    line_h = int(tf.size * 1.3)
+    draw_title(base, lines, tf, LM, 640 - line_h * len(lines), line_h)
+
+    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(ov)
+    hf = font(32, True)
+    handle = channel_handle()
+    hw = int(d.textlength(handle, font=hf)) + 70
+    d.rounded_rectangle((LM, 70, LM + hw, 142), radius=36, fill=WHITE)
+    d.text((LM + hw / 2, 106), handle, font=hf, fill=(20, 20, 26, 255), anchor="mm")
+    d.rounded_rectangle((LM, 672, LM + 128, 678), radius=3, fill=ROSE)
+    draw_pills(d, LM, 712, [("OFFICIAL", ROSE, ROSE_TEXT, False), (lang, ROSE, ROSE_TEXT, False),
+                            (rating_txt, DARK, WHITE, True), (season_txt, DARK, WHITE, False)],
+               h=52, size=26, gap=20)
+    d.text((LM, 830), "  •  ".join(genres), font=font(30, True), fill=(235, 190, 190, 255), anchor="lm")
+    if info.get("media_type") == "movie":
+        ep_line = "FULL MOVIE"
+    elif str(season) not in ("0", ""):
+        ep_line = f"SEASON {season}  •  EP {episodes}"
+    else:
+        ep_line = f"EP {episodes}"
+    d.text((LM, 895), ep_line, font=font(40, True), fill=WHITE, anchor="lm")
+
+    cy, dia = H - 130, 120
+    bf = font(44, True)
+    bx = LM + dia + 30
+    bw = int(d.textlength("Download Now", font=bf)) + 80
+    d.rounded_rectangle((bx, cy - 42, bx + bw, cy + 42), radius=42, fill=ROSE)
+    d.text((bx + bw / 2, cy + 1), "Download Now", font=bf, fill=WHITE, anchor="mm")
+    draw_dots(d, W - M - 162, 60, 10, 2, True)
+    base.alpha_composite(ov)
+    paste_logo(base, LM + dia // 2, cy, dia)
+    return base
+
+
+# ───────────────────────── Template 6: Neon Frame ─────────────────────────
+
+def tpl_neon(info, hero, season, episodes):
+    lang, rating_txt, season_txt, genres = info_bits(info, season)
+    NEON, CYAN = (255, 80, 130, 255), (70, 220, 255, 255)
+    DK = (10, 10, 16, 225)
+    base = prep_art(hero, 1.3, 1.1)
+    v_gradient(base, 0, H, 40, 110)
+    v_gradient(base, H - 800, 800, 0, 205)
+
+    def frame(dr):
+        dr.rounded_rectangle((36, 36, W - 36, H - 36), radius=34, outline=NEON, width=12)
+        L, ins = 140, 70
+        for cx, cy, sx, sy in [(ins, ins, 1, 1), (W - ins, ins, -1, 1), (ins, H - ins, 1, -1), (W - ins, H - ins, -1, -1)]:
+            dr.line([(cx + sx * L, cy), (cx, cy), (cx, cy + sy * L)], fill=CYAN, width=8, joint="curve")
+
+    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    frame(ImageDraw.Draw(glow))
+    glow = glow.filter(ImageFilter.GaussianBlur(16))
+    base.alpha_composite(glow)
+    base.alpha_composite(glow)
+    frame(ImageDraw.Draw(base))
+
+    d0 = ImageDraw.Draw(base)
+    tf, lines = fit_title(d0, (info.get("name") or "ANIME").upper(), 2000, 2, 150, 64)
+    line_h = int(tf.size * 1.3)
+    draw_title(base, lines, tf, W // 2, (H - 250) - line_h * len(lines), line_h, "m")
+
+    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(ov)
+    items = [("OFFICIAL", NEON, WHITE, False), (lang, NEON, WHITE, False), (rating_txt, DK, WHITE, True),
+             (season_txt, DK, WHITE, False)]
+    if info.get("media_type") == "tv" and episodes:
+        items.append((f"EP {episodes}", DK, WHITE, False))
+    draw_pills(d, (W - pills_total(d, items)) // 2, H - 215, items)
+    d.text((W // 2, H - 105), "  •  ".join(genres), font=font(32, True), fill=(160, 235, 255, 255), anchor="mm")
+
+    hf = font(34, True)
+    handle = channel_handle()
+    hw = int(d.textlength(handle, font=hf)) + 80
+    d.rounded_rectangle((W // 2 - hw // 2, 78, W // 2 + hw // 2, 150), radius=36, fill=DK, outline=NEON, width=4)
+    d.text((W // 2, 114), handle, font=hf, fill=WHITE, anchor="mm")
+    df = font(32, True)
+    dw = int(d.textlength("DOWNLOAD NOW", font=df)) + 70
+    d.rounded_rectangle((W - 130 - dw, 78, W - 130, 150), radius=36, fill=DK, outline=CYAN, width=4)
+    d.text((W - 130 - dw / 2, 114), "DOWNLOAD NOW", font=df, fill=CYAN, anchor="mm")
+    base.alpha_composite(ov)
+    paste_logo(base, 190, 114, 110)
+    return base
+
+
+# ───────────────────────── Template 7: Minimal Bar ─────────────────────────
+
+def tpl_bar(info, hero, season, episodes):
+    lang, rating_txt, season_txt, genres = info_bits(info, season)
+    BAR = 200
+    base = prep_art(hero)
+    v_gradient(base, 0, 300, 110, 0)
+    v_gradient(base, H - BAR - 300, 300, 0, 90)
+    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(ov)
+    d.rectangle((0, H - BAR, W, H), fill=(246, 246, 248, 255))
+    d.rectangle((0, H - BAR, W, H - BAR + 8), fill=ROSE)
+
+    DK_TXT, GREY = (20, 20, 26, 255), (120, 120, 130, 255)
+    tx = M + 130 + 40
+    tf, lines = fit_title(d, (info.get("name") or "ANIME").upper(), 1150, 1, 84, 36)
+    d.text((tx, H - 118), lines[0], font=tf, fill=DK_TXT, anchor="lm")
+    d.text((tx, H - 48), "  •  ".join(genres), font=font(28, True), fill=ROSE, anchor="lm")
+
+    if info.get("media_type") == "movie":
+        stats = [("TYPE", "MOVIE"), ("AUDIO", "TAMIL"), ("RATING", rating_txt)]
+    else:
+        stats = [("SEASON", str(season) if str(season) not in ("0", "") else "1"),
+                 ("EPISODES", episodes or "-"), ("RATING", rating_txt)]
+    sx, colw = 1450, 230
+    for i, (label, val) in enumerate(stats):
+        x0 = sx + i * colw
+        if i:
+            d.line((x0 - 14, H - 150, x0 - 14, H - 50), fill=(200, 200, 205, 255), width=3)
+        tx2 = x0
+        d.text((tx2, H - 135), label, font=font(24, True), fill=GREY, anchor="lm")
+        if label == "RATING":
+            d.polygon(star_points(tx2 + 17, H - 80, 19), fill=GOLD)
+            tx2 += 46
+        d.text((tx2, H - 80), val, font=fit_text(d, val, colw - 50, 42, 22), fill=DK_TXT, anchor="lm")
+    d.rounded_rectangle((W - M - 326, H - 140, W - M, H - 60), radius=40, fill=ROSE)
+    d.text((W - M - 163, H - 99), "DOWNLOAD NOW", font=font(30, True), fill=WHITE, anchor="mm")
+
+    draw_pills(d, M, 64, [("OFFICIAL", ROSE, ROSE_TEXT, False), (lang, ROSE, ROSE_TEXT, False)])
+    hf = font(34, True)
+    handle = channel_handle()
+    hw = int(d.textlength(handle, font=hf)) + 76
+    d.rounded_rectangle((W - M - hw, 56, W - M, 128), radius=36, fill=WHITE)
+    d.text((W - M - hw / 2, 92), handle, font=hf, fill=DK_TXT, anchor="mm")
+    base.alpha_composite(ov)
+    paste_logo(base, M + 65, H - BAR // 2 + 4, 130)
+    return base
+
+
+# ───────────────────────── Template 8: Big Episode ─────────────────────────
+
+def tpl_episode(info, hero, season, episodes):
+    lang, rating_txt, season_txt, genres = info_bits(info, season)
+    base = prep_art(hero, 1.1, 1.1)
+    v_gradient(base, 0, H, 110, 190)
+    v_gradient(base, H - 700, 700, 0, 160)
+    if info.get("media_type") == "movie":
+        big = "FILM"
+    else:
+        m = re.search(r"\d+", episodes or "")
+        big = m.group(0) if m else str(season)
+
+    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(ov)
+    bf = font(820 if len(big) <= 3 else 560, True)
+    d.text((W - 60, H // 2 - 10), big, font=bf, fill=(255, 255, 255, 18),
+           stroke_width=5, stroke_fill=(255, 255, 255, 90), anchor="rm")
+    base.alpha_composite(ov)
+
+    genre_y, pills_y = H - 110, H - 210
+    accent_y = pills_y - 32
+    d0 = ImageDraw.Draw(base)
+    tf, lines = fit_title(d0, (info.get("name") or "ANIME").upper(), 1400, 2, 130, 56)
+    line_h = int(tf.size * 1.35)
+    draw_title(base, lines, tf, M, accent_y - 34 - line_h * len(lines), line_h)
+
+    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(ov)
+    d.rounded_rectangle((M, accent_y, M + 128, accent_y + 6), radius=3, fill=ROSE)
+    draw_pills(d, M, pills_y, [("OFFICIAL", ROSE, ROSE_TEXT, False), (lang, ROSE, ROSE_TEXT, False),
+                               (rating_txt, DARK, WHITE, True), (season_txt, DARK, WHITE, False)])
+    d.text((M, genre_y), "  •  ".join(genres), font=font(32, True), fill=(235, 190, 190, 255), anchor="lm")
+
+    hf = font(34, True)
+    handle = channel_handle()
+    hw = int(d.textlength(handle, font=hf)) + 76
+    d.rounded_rectangle((M, 64, M + hw, 136), radius=36, fill=WHITE)
+    d.text((M + hw / 2, 100), handle, font=hf, fill=(20, 20, 26, 255), anchor="mm")
+    ep_txt = "FULL MOVIE" if info.get("media_type") == "movie" else f"EPISODES  {episodes}"
+    ef = font(40, True)
+    ew = int(d.textlength(ep_txt, font=ef)) + 80
+    d.rounded_rectangle((W - M - ew, 64, W - M, 136), radius=36, fill=ROSE)
+    d.text((W - M - ew / 2, 100), ep_txt, font=ef, fill=WHITE, anchor="mm")
+
+    dia = 150
+    lcx, lcy = W - M - dia // 2, H - 64 - dia // 2
+    d.text((lcx - dia // 2 - 30, lcy), "Download Now", font=font(54, True), fill=WHITE, anchor="rm")
+    base.alpha_composite(ov)
+    paste_logo(base, lcx, lcy, dia)
+    return base
+
+
 # ───────────────────────── Template registry ─────────────────────────
 # To add a template: write tpl_xxx(info, hero, season, episodes) -> RGBA image, then add it here.
 
@@ -556,6 +759,10 @@ TEMPLATES = {
     "split": ("Split Card", tpl_split, "Blurred backdrop with a portrait poster card on the right."),
     "center": ("Center Stage", tpl_center, "Letterbox cinema bars with a centered title."),
     "glass": ("Glass Panel", tpl_glass, "Frosted glass info panel with season / episode / rating stats."),
+    "slash": ("Diagonal Slash", tpl_slash, "Dark diagonal info panel on the left, artwork open on the right."),
+    "neon": ("Neon Frame", tpl_neon, "Glowing neon border with corner brackets and a centered title."),
+    "bar": ("Minimal Bar", tpl_bar, "Clean white info bar under full artwork."),
+    "episode": ("Big Episode", tpl_episode, "Giant outlined episode number behind the title."),
 }
 
 
