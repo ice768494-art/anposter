@@ -1033,31 +1033,66 @@ async def index_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🎨 *Anime Poster Bot*\n\nUse `/p Naruto Shippuden` to create a poster.\n"
-        "Browse TMDB images with previews, pick one of 4 templates (with live preview), "
-        "then enter the season and episode range.",
+        "🎨 *Anime Poster Bot*\n\n"
+        "Normal poster: `/p Naruto Shippuden`\n"
+        "A-Z index poster: `/p letter A` or `/p A`\n\n"
+        "Browse TMDB images, choose a template, then enter season and episode details.",
         parse_mode=ParseMode.MARKDOWN)
 
 
 async def poster(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).strip()
-    if not query:
-        await update.message.reply_text("Send an anime name: `/p Naruto Shippuden`", parse_mode=ParseMode.MARKDOWN)
+
+    # A-Z Anime Index poster commands:
+    # /p A, /p letter A, /p index A
+    match = re.fullmatch(r"(?:(?:letter|index)\s+)?([A-Za-z])", query, re.IGNORECASE)
+    if match:
+        letter = match.group(1).upper()
+        characters = INDEX_CHARACTERS.get(letter, [])
+        if not characters:
+            await update.message.reply_text(
+                f"Sorry, no characters are configured for letter {letter} yet."
+            )
+            return ConversationHandler.END
+        await send_index(update, context, letter)
         return ConversationHandler.END
+
+    # Normal anime poster flow
+    if not query:
+        await update.message.reply_text(
+            "🎨 Anime Poster Bot\n\n"
+            "Normal poster: /p Naruto Shippuden\n"
+            "A-Z index poster: /p letter A\n"
+            "You can also use: /p A or /p index A"
+        )
+        return ConversationHandler.END
+
     try:
-        data = await asyncio.to_thread(tmdb, "/search/multi", {"query": query, "include_adult": "false"})
-        results = [x for x in data.get("results", []) if x.get("media_type") in ("tv", "movie")][:8]
+        data = await asyncio.to_thread(
+            tmdb, "/search/multi", {"query": query, "include_adult": "false"}
+        )
+        results = [
+            item for item in data.get("results", [])
+            if item.get("media_type") in ("tv", "movie")
+        ][:8]
         if not results:
             await update.message.reply_text("No matching title found. Try another spelling.")
             return ConversationHandler.END
+
         context.user_data["results"] = results
         rows = []
-        for i, x in enumerate(results):
-            name = x.get("name") or x.get("title") or "Untitled"
-            year = (x.get("first_air_date") or x.get("release_date") or "")[:4]
-            rows.append([InlineKeyboardButton(f"{name} {('(' + year + ')') if year else ''} · {x['media_type'].upper()}",
-                                              callback_data=f"pick:{i}")])
-        await update.message.reply_text("Choose the correct anime:", reply_markup=InlineKeyboardMarkup(rows))
+        for i, item in enumerate(results):
+            name = item.get("name") or item.get("title") or "Untitled"
+            year = (item.get("first_air_date") or item.get("release_date") or "")[:4]
+            label = f"{name} ({year})" if year else name
+            rows.append([InlineKeyboardButton(
+                f"{label} · {item['media_type'].upper()}",
+                callback_data=f"pick:{i}"
+            )])
+
+        await update.message.reply_text(
+            "Choose the correct anime:", reply_markup=InlineKeyboardMarkup(rows)
+        )
         return SEARCH
     except Exception as e:
         log.exception("Search failed")
