@@ -1,22 +1,26 @@
-"""Anime Poster Bot — 4 landscape poster templates (2560x1440) with live button previews.
+"""Anime Poster Bot — 8 landscape poster templates (2560x1440) with live button previews
++ Anime INDEX posters (/p Z) with 5 styles.
 
 Flow:  /p <name> -> pick title -> browse TMDB images (◀ ▶ preview) -> browse templates
        (live preview of YOUR image) -> season -> episodes -> poster.
+Index: /p Z   (or /p Letter Z, /p index Z) -> instant index poster, ◀ Style ▶ and 🔄 Another character.
 
 Environment variables:
   TELEGRAM_BOT_TOKEN (required)
   TMDB_READ_ACCESS_TOKEN (recommended) or TMDB_API_KEY
   CHANNEL_USERNAME (optional, e.g. @AnimeNetworkTamil)
+  USE_REMBG (optional, 1 = auto background removal for index characters)
 
 Optional files next to bot.py:
   fonts/Poppins-Bold.ttf
   fonts/Poppins-SemiBold.ttf
   logo.png                      (square channel logo)
+  characters/roronoa_zoro.png   (transparent cutouts for index posters, lowercase_with_underscores)
 
 Install: pip install -r requirements.txt
 Run: python bot.py
 """
-import os, io, re, math, html, logging, asyncio, threading
+import os, io, re, math, html, random, logging, asyncio, threading
 from typing import Optional
 import requests
 from flask import Flask, jsonify
@@ -880,8 +884,13 @@ async def show_template(context, chat_id, key, q=None):
     await show_photo(context, chat_id, q, data, caption, tpl_kb(key))
 
 
-# ───────────────────────── Letter Index Poster ─────────────────────────
+# ───────────────────────── Anime INDEX posters (/p Z) ─────────────────────────
 ANILIST_API = "https://graphql.anilist.co"
+CHAR_DIR = os.path.join(BASE_DIR, "characters")
+USE_REMBG = os.getenv("USE_REMBG", "0") == "1"
+NEON, CYAN = (255, 80, 130, 255), (70, 220, 255, 255)
+INK = (14, 14, 20, 255)
+_CHAR_CACHE, _REMBG = {}, None
 
 # letter -> [(character, anime)]. Add as many as you like.
 INDEX_CHARACTERS = {
@@ -935,84 +944,288 @@ def anime_backdrop(title: str) -> Optional[Image.Image]:
     return None
 
 
-def make_index_poster(letter, char_name, anime_name, char_img, backdrop) -> io.BytesIO:
-    base = prep_art(backdrop, 1.15, 1.1).filter(ImageFilter.GaussianBlur(5))
-    dim = Image.new("RGBA", (W, H), (8, 8, 12, 165))
-    base.alpha_composite(dim)
-    v_gradient(base, H - 600, 600, 0, 200)
+# ───────── character loading ─────────
 
-    # character card (right)
-    CW, CH = 720, 1080
-    cx0, cy0 = W - 170 - CW, (H - CH) // 2
-    sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    ImageDraw.Draw(sh).rounded_rectangle((cx0 + 10, cy0 + 24, cx0 + CW + 10, cy0 + CH + 24), radius=44, fill=(0, 0, 0, 210))
-    base.alpha_composite(sh.filter(ImageFilter.GaussianBlur(30)))
-    card = cover(char_img, (CW, CH)).filter(ImageFilter.UnsharpMask(radius=3, percent=120, threshold=2)).convert("RGBA")
-    mask = Image.new("L", (CW, CH), 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, CW - 1, CH - 1), radius=40, fill=255)
-    base.paste(card, (cx0, cy0), mask)
+def _slug(s):
+    return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
 
+
+def local_cutout(name):
+    for ext in ("png", "webp"):
+        p = os.path.join(CHAR_DIR, f"{_slug(name)}.{ext}")
+        if os.path.exists(p):
+            return Image.open(p).convert("RGBA")
+    return None
+
+
+def rembg_cutout(img):
+    global _REMBG
+    from rembg import remove, new_session
+    if _REMBG is None:
+        _REMBG = new_session("isnet-anime")
+    big = img.resize((img.width * 3, img.height * 3), Image.Resampling.LANCZOS)
+    return remove(big, session=_REMBG).convert("RGBA")
+
+
+def get_character(name):
+    """-> (RGBA image, is_cutout)"""
+    if name in _CHAR_CACHE:
+        return _CHAR_CACHE[name]
+    img, cut = local_cutout(name), True
+    if img is None:
+        raw = anilist_character(name)
+        if raw is None:
+            raise RuntimeError(f"No image found for {name}")
+        img, cut = raw.convert("RGBA"), False
+        if USE_REMBG:
+            try:
+                img, cut = rembg_cutout(raw), True
+            except Exception as e:
+                log.warning("rembg failed for %s: %s", name, e)
+    if len(_CHAR_CACHE) > 24:
+        _CHAR_CACHE.clear()
+    _CHAR_CACHE[name] = (img, cut)
+    return img, cut
+
+
+# ───────── drawing helpers ─────────
+
+def space_bg(seed, a=(8, 8, 22), b=(34, 18, 78), blobs=True):
+    rnd = random.Random(ord(seed) if isinstance(seed, str) else seed)
+    g = Image.linear_gradient("L").resize((W, H))
+    base = Image.composite(Image.new("RGB", (W, H), b), Image.new("RGB", (W, H), a), g).convert("RGBA")
+    if blobs:
+        sw, sh = W // 4, H // 4
+        neb = Image.new("RGBA", (sw, sh), (0, 0, 0, 0))
+        nd = ImageDraw.Draw(neb)
+        for _ in range(7):
+            x, y, r = rnd.randint(0, sw), rnd.randint(0, sh), rnd.randint(60, 130)
+            nd.ellipse((x - r, y - r, x + r, y + r),
+                       fill=rnd.choice([(90, 50, 170), (40, 70, 170), (150, 50, 130)]) + (46,))
+        neb = neb.filter(ImageFilter.GaussianBlur(32)).resize((W, H), Image.Resampling.BICUBIC)
+        base.alpha_composite(neb)
+    st = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    sd = ImageDraw.Draw(st)
+    for _ in range(1100):
+        x, y = rnd.randint(0, W), rnd.randint(0, H)
+        r, al = rnd.choice((1, 1, 1, 2, 2, 3)), rnd.randint(80, 255)
+        sd.ellipse((x - r, y - r, x + r, y + r), fill=(255, 255, 255, al))
+    big = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    bd = ImageDraw.Draw(big)
+    for _ in range(45):
+        x, y, r = rnd.randint(0, W), rnd.randint(0, H), rnd.randint(3, 5)
+        bd.ellipse((x - r, y - r, x + r, y + r), fill=(200, 210, 255, 200))
+    base.alpha_composite(big.filter(ImageFilter.GaussianBlur(5)))
+    base.alpha_composite(st)
+    return base
+
+
+def place_character(base, ch, is_cut, box, glow=(255, 255, 255)):
+    x0, y0, x1, y1 = box
+    bw, bh = x1 - x0, y1 - y0
+    if not is_cut:  # plain image -> rounded card
+        card = cover(ch.convert("RGB"), (bw, bh)).filter(
+            ImageFilter.UnsharpMask(radius=3, percent=120, threshold=2)).convert("RGBA")
+        sh = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        ImageDraw.Draw(sh).rounded_rectangle((x0 + 8, y0 + 22, x1 + 8, y1 + 22), radius=40, fill=(0, 0, 0, 190))
+        base.alpha_composite(sh.filter(ImageFilter.GaussianBlur(26)))
+        m = Image.new("L", (bw, bh), 0)
+        ImageDraw.Draw(m).rounded_rectangle((0, 0, bw - 1, bh - 1), radius=40, fill=255)
+        base.paste(card, (x0, y0), m)
+        ImageDraw.Draw(base).rounded_rectangle((x0, y0, x1, y1), radius=40, outline=(255, 255, 255, 235), width=6)
+        return
+    bb = ch.getchannel("A").getbbox()
+    if bb:
+        ch = ch.crop(bb)
+    r = min(bw / ch.width, bh / ch.height)
+    ch = ch.resize((max(1, int(ch.width * r)), max(1, int(ch.height * r))), Image.Resampling.LANCZOS)
+    pad = 48
+    cv = Image.new("RGBA", (ch.width + 2 * pad, ch.height + 2 * pad), (0, 0, 0, 0))
+    cv.paste(ch, (pad, pad))
+    halo = cv.getchannel("A").filter(ImageFilter.MaxFilter(13)).filter(ImageFilter.GaussianBlur(5))
+    g = Image.new("RGBA", cv.size, tuple(glow) + (0,))
+    g.putalpha(halo)
+    px = max(0, x0 + (bw - ch.width) // 2 - pad)
+    py = max(0, y1 - ch.height - pad)
+    base.alpha_composite(g, (px, py))
+    base.alpha_composite(cv, (px, py))
+
+
+def idx_pill(d, x, cy, text, size=100, fill=WHITE, tcol=INK, outline=None, anchor="m"):
+    f = font(size, True)
+    w, h = int(d.textlength(text, font=f) + size * 1.7), int(size * 2.3)
+    cx = x + w // 2 if anchor == "l" else x
+    d.rounded_rectangle((cx - w // 2, cy - h // 2, cx + w // 2, cy + h // 2), radius=h // 2,
+                        fill=fill, outline=outline, width=5 if outline else 0)
+    d.text((cx, cy + 2), text, font=f, fill=tcol, anchor="mm")
+    return w
+
+
+def handle_chip(d, x, y, fill=WHITE, tcol=INK, anchor="l"):
+    f, hnd = font(36, True), channel_handle()
+    w = int(d.textlength(hnd, font=f)) + 80
+    x0 = x if anchor == "l" else (x - w // 2 if anchor == "m" else x - w)
+    d.rounded_rectangle((x0, y, x0 + w, y + 76), radius=38, fill=fill)
+    d.text((x0 + w / 2, y + 39), hnd, font=f, fill=tcol, anchor="mm")
+
+
+# ───────── index templates: fn(letter, char, anime, img, is_cut, backdrop) -> RGBA ─────────
+
+def ix_space(L, name, anime, ch, cut, bd):
+    """Starry space (matches the sample poster)."""
+    base = space_bg(L)
+    place_character(base, ch, cut, (1600, 50, 2540, 1390))
+    d = ImageDraw.Draw(base)
+    idx_pill(d, 980, 660, f"INDEX - {L}", 100)
+    d.text((980, 905), channel_handle(), font=font(64, True), fill=WHITE, anchor="mm")
+    return base
+
+
+def ix_letter(L, name, anime, ch, cut, bd):
+    """Gradient with a giant faded letter behind the character."""
+    g = Image.linear_gradient("L").resize((W, H))
+    base = Image.composite(Image.new("RGB", (W, H), (24, 16, 70)),
+                           Image.new("RGB", (W, H), (196, 70, 110)), g).convert("RGBA")
     ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    d = ImageDraw.Draw(ov)
-    d.rounded_rectangle((cx0, cy0, cx0 + CW, cy0 + CH), radius=40, outline=(255, 255, 255, 235), width=6)
-
-    # giant letter (left)
-    LX = 760
-    lf = font(1000, True)
-    d.text((LX + 14, H // 2 + 36), letter, font=lf, fill=(0, 0, 0, 120), anchor="mm")
-    d.text((LX, H // 2 + 20), letter, font=lf, fill=(214, 96, 112, 255),
-           stroke_width=6, stroke_fill=WHITE, anchor="mm")
-
-    # headings
-    d.text((LX, 262), "ANIME INDEX", font=font(86, True), fill=WHITE, anchor="mm")
-    d.rounded_rectangle((LX - 64, 322, LX + 64, 328), radius=3, fill=ROSE)
-    line = f"{letter} FOR {char_name.upper()}"
-    d.text((LX, 1170), line, font=fit_text(d, line, 1300, 88, 40), fill=WHITE, anchor="mm")
-    d.text((LX, 1250), anime_name.upper(), font=fit_text(d, anime_name.upper(), 1200, 40, 24),
-           fill=(235, 190, 190, 255), anchor="mm")
-
-    # top bar: handle + download
-    hf = font(34, True)
-    handle = channel_handle()
-    hw = int(d.textlength(handle, font=hf)) + 76
-    d.rounded_rectangle((305, 70, 305 + hw, 142), radius=36, fill=WHITE)
-    d.text((305 + hw / 2, 106), handle, font=hf, fill=(20, 20, 26, 255), anchor="mm")
-    df = font(34, True)
-    dw = int(d.textlength("DOWNLOAD NOW", font=df)) + 70
-    d.rounded_rectangle((W - M - dw, 70, W - M, 142), radius=36, fill=ROSE)
-    d.text((W - M - dw / 2, 106), "DOWNLOAD NOW", font=df, fill=WHITE, anchor="mm")
-    draw_dots(d, W - M - dw - 230, 88, 10, 2, True)
-
+    ImageDraw.Draw(ov).text((1780, H // 2 + 40), L, font=font(1700, True), fill=(255, 255, 255, 46), anchor="mm")
     base.alpha_composite(ov)
-    paste_logo(base, 165, 106, 110)
-    return finish(base)
+    place_character(base, ch, cut, (1380, 60, 2300, 1390))
+    d0 = ImageDraw.Draw(base)
+    tf, lines = fit_title(d0, f"{L} FOR {name.upper()}", 1150, 3, 130, 56)
+    lh = int(tf.size * 1.3)
+    draw_title(base, lines, tf, 130, 780 - lh * len(lines), lh)
+    d = ImageDraw.Draw(base)
+    d.text((130, 330), "ANIME INDEX", font=font(96, True), fill=WHITE, anchor="lm")
+    d.rounded_rectangle((130, 410, 258, 416), radius=3, fill=WHITE)
+    d.text((130, 850), anime.upper(), font=fit_text(d, anime.upper(), 1100, 44, 24),
+           fill=(255, 220, 225, 255), anchor="lm")
+    handle_chip(d, 130, 1180)
+    return base
 
 
-def index_kb(letter, idx):
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Another character", callback_data=f"idx:{letter}:{idx + 1}")]])
+def ix_neon(L, name, anime, ch, cut, bd):
+    """Neon frame, outlined letter left, character centre, text right."""
+    base = space_bg(L, (6, 6, 16), (18, 10, 44), blobs=False)
+
+    def frame(dr):
+        dr.rounded_rectangle((36, 36, W - 36, H - 36), radius=34, outline=NEON, width=12)
+        Ln, ins = 140, 70
+        for cx, cy, sx, sy in [(ins, ins, 1, 1), (W - ins, ins, -1, 1), (ins, H - ins, 1, -1), (W - ins, H - ins, -1, -1)]:
+            dr.line([(cx + sx * Ln, cy), (cx, cy), (cx, cy + sy * Ln)], fill=CYAN, width=8, joint="curve")
+
+    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    frame(ImageDraw.Draw(glow))
+    glow = glow.filter(ImageFilter.GaussianBlur(16))
+    base.alpha_composite(glow)
+    base.alpha_composite(glow)
+    frame(ImageDraw.Draw(base))
+    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(ov).text((470, H // 2), L, font=font(1000, True), fill=(255, 80, 130, 22),
+                            stroke_width=7, stroke_fill=NEON, anchor="mm")
+    base.alpha_composite(ov)
+    place_character(base, ch, cut, (900, 150, 1660, 1390), glow=(255, 120, 170))
+    d0 = ImageDraw.Draw(base)
+    tf, lines = fit_title(d0, name.upper(), 670, 2, 90, 44)
+    lh = int(tf.size * 1.3)
+    draw_title(base, lines, tf, 1760, 640, lh)
+    d = ImageDraw.Draw(base)
+    d.text((1760, 470), "INDEX", font=font(130, True), fill=CYAN, anchor="lm")
+    d.text((1760, 640 + lh * len(lines) + 30), anime.upper(), font=fit_text(d, anime.upper(), 670, 36, 22),
+           fill=(255, 200, 215, 255), anchor="lm")
+    handle_chip(d, 1760, 640 + lh * len(lines) + 100, fill=NEON, tcol=WHITE)
+    return base
 
 
-async def render_index(letter: str, idx: int):
+def ix_scene(L, name, anime, ch, cut, bd):
+    """Blurred anime scene with huge letter and title."""
+    if bd is None:
+        base = space_bg(L)
+    else:
+        base = prep_art(bd, 1.2, 1.1).filter(ImageFilter.GaussianBlur(10))
+        base.alpha_composite(Image.new("RGBA", (W, H), (6, 6, 12, 150)))
+    place_character(base, ch, cut, (1500, 50, 2480, 1390))
+    d0 = ImageDraw.Draw(base)
+    lf = font(560, True)
+    lw = int(d0.textlength(L, font=lf))
+    tx = 130 + lw + 70
+    tf, lines = fit_title(d0, name.upper(), max(500, 1450 - tx), 3, 100, 44)
+    lh = int(tf.size * 1.3)
+    draw_title(base, lines, tf, tx, 960 - lh * len(lines) // 2, lh)
+    d = ImageDraw.Draw(base)
+    d.text((130, 470), "INDEX", font=font(210, True), fill=WHITE, anchor="lm")
+    d.text((130, 960), L, font=lf, fill=(214, 96, 112, 255), stroke_width=6, stroke_fill=WHITE, anchor="lm")
+    d.text((tx, 960 + lh * len(lines) // 2 + 40), anime.upper(), font=fit_text(d, anime.upper(), 1450 - tx, 38, 22),
+           fill=(235, 190, 190, 255), anchor="lm")
+    handle_chip(d, 130, 1240)
+    return base
+
+
+def ix_bar(L, name, anime, ch, cut, bd):
+    """Character on top, clean white info bar at the bottom."""
+    BAR = 230
+    if bd is None:
+        base = space_bg(L)
+    else:
+        base = prep_art(bd, 1.2, 1.1).filter(ImageFilter.GaussianBlur(4))
+        base.alpha_composite(Image.new("RGBA", (W, H), (6, 6, 12, 110)))
+    place_character(base, ch, cut, (1450, 40, 2500, H - BAR - 10))
+    d = ImageDraw.Draw(base)
+    d.rectangle((0, H - BAR, W, H), fill=(246, 246, 248, 255))
+    d.rectangle((0, H - BAR, W, H - BAR + 8), fill=ROSE)
+    pw = idx_pill(d, 130, H - BAR // 2 + 4, f"INDEX - {L}", 70, fill=ROSE, tcol=WHITE, anchor="l")
+    tx = 130 + pw + 70
+    d.text((tx, H - BAR // 2 - 22), name.upper(), font=fit_text(d, name.upper(), 900, 72, 32), fill=INK, anchor="lm")
+    d.text((tx, H - BAR // 2 + 48), anime.upper(), font=fit_text(d, anime.upper(), 900, 34, 20), fill=ROSE, anchor="lm")
+    handle_chip(d, W - M, H - BAR // 2 - 34, fill=ROSE, tcol=WHITE, anchor="r")
+    return base
+
+
+# name: (label, function, needs TMDB backdrop)
+IDX_TEMPLATES = {
+    "space": ("Starry Space", ix_space, False),
+    "letter": ("Big Letter", ix_letter, False),
+    "neon": ("Neon Frame", ix_neon, False),
+    "scene": ("Anime Scene", ix_scene, True),
+    "bar": ("Clean Bar", ix_bar, True),
+}
+
+
+# ───────── index bot glue ─────────
+
+def index_kb(letter, ci, ti):
+    n = len(IDX_TEMPLATES)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("◀ Style", callback_data=f"idx:{letter}:{ci}:{(ti - 1) % n}"),
+         InlineKeyboardButton(f"🎨 {ti + 1}/{n}", callback_data="idx:noop"),
+         InlineKeyboardButton("Style ▶", callback_data=f"idx:{letter}:{ci}:{(ti + 1) % n}")],
+        [InlineKeyboardButton("🔄 Another character", callback_data=f"idx:{letter}:{ci + 1}:{ti}")],
+    ])
+
+
+async def render_index(letter, ci, ti):
     chars = INDEX_CHARACTERS[letter]
-    idx %= len(chars)
-    char_name, anime = chars[idx]
-    char_img, backdrop = await asyncio.gather(
-        asyncio.to_thread(anilist_character, char_name),
-        asyncio.to_thread(anime_backdrop, anime))
-    if char_img is None:
-        raise RuntimeError(f"No AniList image for {char_name}")
-    buf = await asyncio.to_thread(make_index_poster, letter, char_name, anime, char_img, backdrop)
-    caption = (f"📚 <b>Anime Index — Letter {letter}</b>\n"
-               f"🎌 <b>{html.escape(char_name)}</b> · {html.escape(anime)}")
-    return buf.getvalue(), caption, idx
+    ci %= len(chars)
+    keys = list(IDX_TEMPLATES)
+    ti %= len(keys)
+    tname, fn, needs_bd = IDX_TEMPLATES[keys[ti]]
+    name, anime = chars[ci]
+    (ch, cut), bd = await asyncio.gather(
+        asyncio.to_thread(get_character, name),
+        asyncio.to_thread(anime_backdrop, anime) if needs_bd else asyncio.sleep(0, None))
+    base = await asyncio.to_thread(fn, letter, name, anime, ch, cut, bd)
+    buf = await asyncio.to_thread(finish, base)
+    caption = (f"📚 <b>Anime Index — {letter}</b>\n"
+               f"🎌 <b>{html.escape(name)}</b> · {html.escape(anime)}\n"
+               f"🎨 Style: {html.escape(tname)}")
+    return buf.getvalue(), caption, ci, ti
 
 
 async def send_index(update: Update, context: ContextTypes.DEFAULT_TYPE, letter: str):
     chat_id = update.message.chat_id
     await context.bot.send_chat_action(chat_id, ChatAction.UPLOAD_PHOTO)
     try:
-        data, caption, idx = await render_index(letter, 0)
-        await show_photo(context, chat_id, None, data, caption, index_kb(letter, idx))
+        data, caption, ci, ti = await render_index(letter, 0, 0)
+        await show_photo(context, chat_id, None, data, caption, index_kb(letter, ci, ti))
     except Exception as e:
         log.exception("Index poster failed")
         await update.message.reply_text(f"Index poster failed: {e}")
@@ -1020,79 +1233,56 @@ async def send_index(update: Update, context: ContextTypes.DEFAULT_TYPE, letter:
 
 async def index_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    _, letter, i = q.data.split(":")
+    if q.data == "idx:noop":
+        await q.answer()
+        return
+    _, letter, ci, ti = q.data.split(":")
     await q.answer("Creating poster…")
     try:
-        data, caption, idx = await render_index(letter, int(i))
-        await show_photo(context, q.message.chat_id, q, data, caption, index_kb(letter, idx))
+        data, caption, ci, ti = await render_index(letter, int(ci), int(ti))
+        await show_photo(context, q.message.chat_id, q, data, caption, index_kb(letter, ci, ti))
     except Exception as e:
         log.exception("Index refresh failed")
         await context.bot.send_message(q.message.chat_id, f"Could not create poster: {e}")
+
 
 # ───────────────────────── Bot handlers ─────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎨 *Anime Poster Bot*\n\n"
-        "Normal poster: `/p Naruto Shippuden`\n"
-        "A-Z index poster: `/p letter A` or `/p A`\n\n"
-        "Browse TMDB images, choose a template, then enter season and episode details.",
+        "• `/p Naruto Shippuden` — create an anime poster (pick image, template, season, episodes).\n"
+        "• `/p Z` — create an *Index* poster for a letter (5 styles + another character).",
         parse_mode=ParseMode.MARKDOWN)
 
 
 async def poster(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args).strip()
-
-    # A-Z Anime Index poster commands:
-    # /p A, /p letter A, /p index A
-    match = re.fullmatch(r"(?:(?:letter|index)\s+)?([A-Za-z])", query, re.IGNORECASE)
-    if match:
-        letter = match.group(1).upper()
-        characters = INDEX_CHARACTERS.get(letter, [])
-        if not characters:
-            await update.message.reply_text(
-                f"Sorry, no characters are configured for letter {letter} yet."
-            )
-            return ConversationHandler.END
-        await send_index(update, context, letter)
+    if not query:
+        await update.message.reply_text("Send an anime name: `/p Naruto Shippuden`\nOr a letter: `/p Z`",
+                                        parse_mode=ParseMode.MARKDOWN)
         return ConversationHandler.END
 
-    # Normal anime poster flow
-    if not query:
-        await update.message.reply_text(
-            "🎨 Anime Poster Bot\n\n"
-            "Normal poster: /p Naruto Shippuden\n"
-            "A-Z index poster: /p letter A\n"
-            "You can also use: /p A or /p index A"
-        )
+    # /p Z   |   /p Letter Z   |   /p index Z
+    m = re.match(r"^(?:(?:letter|index)\s+)?([A-Za-z])$", query, re.I)
+    if m:
+        await send_index(update, context, m.group(1).upper())
         return ConversationHandler.END
 
     try:
-        data = await asyncio.to_thread(
-            tmdb, "/search/multi", {"query": query, "include_adult": "false"}
-        )
-        results = [
-            item for item in data.get("results", [])
-            if item.get("media_type") in ("tv", "movie")
-        ][:8]
+        data = await asyncio.to_thread(tmdb, "/search/multi", {"query": query, "include_adult": "false"})
+        results = [x for x in data.get("results", []) if x.get("media_type") in ("tv", "movie")][:8]
         if not results:
             await update.message.reply_text("No matching title found. Try another spelling.")
             return ConversationHandler.END
-
         context.user_data["results"] = results
         rows = []
-        for i, item in enumerate(results):
-            name = item.get("name") or item.get("title") or "Untitled"
-            year = (item.get("first_air_date") or item.get("release_date") or "")[:4]
-            label = f"{name} ({year})" if year else name
-            rows.append([InlineKeyboardButton(
-                f"{label} · {item['media_type'].upper()}",
-                callback_data=f"pick:{i}"
-            )])
-
-        await update.message.reply_text(
-            "Choose the correct anime:", reply_markup=InlineKeyboardMarkup(rows)
-        )
+        for i, x in enumerate(results):
+            name = x.get("name") or x.get("title") or "Untitled"
+            year = (x.get("first_air_date") or x.get("release_date") or "")[:4]
+            rows.append([InlineKeyboardButton(f"{name} {('(' + year + ')') if year else ''} · {x['media_type'].upper()}",
+                                              callback_data=f"pick:{i}")])
+        await update.message.reply_text("Choose the correct anime:", reply_markup=InlineKeyboardMarkup(rows))
         return SEARCH
     except Exception as e:
         log.exception("Search failed")
@@ -1366,7 +1556,7 @@ def main():
     )
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
-    app.add_handler(CallbackQueryHandler(index_cb, pattern=r"^idx:[A-Z]:\d+$"))
+    app.add_handler(CallbackQueryHandler(index_cb, pattern=r"^idx:([A-Z]:\d+:\d+|noop)$"))
     app.add_handler(conv)
     start_health_server()
     log.info("Anime Poster Bot started")
